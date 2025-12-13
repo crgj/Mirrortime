@@ -1,0 +1,23 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-r",
+                "2",
+                "-s",
+                "/home/gs/gs/data/20251126145547/5547/04/frame000036/",
+                "-m",
+                "/home/gs/gs/data/20251126145547/test1213"
+            ]
+        }
+    ]
+}

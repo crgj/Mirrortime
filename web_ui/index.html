@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreetimeGS Monitor</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        :root {
+            --bg-color: #0b0c15;
+            --card-bg: #151621;
+            --accent-primary: #6366f1;
+            /* Indigo */
+            --accent-secondary: #ec4899;
+            /* Pink */
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --border-color: #2d3748;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Glass / Premium Card Style */
+        .card {
+            background: linear-gradient(145deg, rgba(21, 22, 33, 0.95), rgba(28, 30, 45, 0.95));
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            margin-bottom: 24px;
+        }
+
+        .card-header {
+            background: transparent;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            padding: 1rem 1.5rem;
+        }
+
+        .card-body {
+            padding: 1.5rem;
+        }
+
+        h2 {
+            font-weight: 300;
+            letter-spacing: -1px;
+            margin-bottom: 0;
+            background: linear-gradient(to right, #fff, #94a3b8);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-pill {
+            padding: 0.5rem 1rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background: rgba(34, 197, 94, 0.1);
+            color: #22c55e;
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            transition: all 0.3s;
+        }
+
+        .status-pill.offline {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+            border-color: rgba(239, 68, 68, 0.2);
+        }
+
+        .progress_container {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 2px;
+            /* Slightly tighter padding */
+            height: 16px;
+            /* Taller for visibility */
+            overflow: hidden;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .progress-bar {
+            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 6px;
+            transition: width 0.5s ease-out;
+            height: 100%;
+            /* FIX: Ensure bar fills the container */
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
+            /* Glow effect */
+        }
+
+        .stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .chart-container canvas {
+            /* Improve Chart rendering crispness */
+            image-rendering: pixelated;
+        }
+
+        pre {
+            background: #000 !important;
+            border: 1px solid #333;
+            color: #4ade80;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container-fluid p-4" style="max-width: 1600px;">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-5">
+            <div>
+                <h2>FreeTimeGS <span style="font-weight: 600; color:var(--accent-primary)">Pro</span></h2>
+            </div>
+            <div id="status-badge" class="status-pill offline">Connecting...</div>
+        </div>
+
+        <!-- Summary Stats Row -->
+        <div class="row mb-2">
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <div class="stat-label">Iteration</div>
+                    <div id="iter-display" class="stat-value">0</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <div class="stat-label">Total Iterations</div>
+                    <div id="total-iter-display" class="stat-value">0</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <div class="stat-label">Elapsed Time</div>
+                    <div id="time-display" class="stat-value">0s</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card p-3">
+                    <div class="stat-label">Progress</div>
+                    <div class="d-flex align-items-center" style="height: 38px;">
+                        <div class="progress_container w-100">
+                            <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+                        </div>
+                        <span id="progress-text" class="ms-2 small text-white">0%</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="row">
+            <!-- Left Column: Primary Metrics -->
+            <div class="col-lg-8">
+                <!-- Loss -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between">
+                        <span>L1 Loss History</span>
+                        <span class="badge bg-dark">Log Scale Available</span>
+                    </div>
+                    <div class="card-body">
+                        <div style="height: 350px;">
+                            <canvas id="lossChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Points -->
+                <div class="card">
+                    <div class="card-header">Gaussian Count</div>
+                    <div class="card-body">
+                        <div style="height: 250px;">
+                            <canvas id="pointsChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Secondary Stats -->
+            <div class="col-lg-4">
+                <!-- Lifetime -->
+                <div class="card">
+                    <div class="card-header">Lifetime Distribution</div>
+                    <div class="card-body">
+                        <div style="height: 250px;">
+                            <canvas id="lifetimeChart"></canvas>
+                        </div>
+                        <div class="text-center mt-2 text-muted small">Duration (Frames)</div>
+                    </div>
+                </div>
+
+                <!-- Config -->
+                <div class="card">
+                    <div class="card-header">Configuration</div>
+                    <div class="card-body p-0">
+                        <pre id="config-display" style="height: 350px; overflow-y: auto; margin:0; border:none;"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Setup Charts with Correct Scales ---
+        Chart.defaults.color = '#64748b';
+        Chart.defaults.borderColor = 'rgba(255,255,255,0.05)';
+        Chart.defaults.font.family = "'Inter', sans-serif";
+
+        const commonOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: {
+                mode: 'nearest',
+                axis: 'x',
+                intersect: false
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(0,0,0,0.9)',
+                    titleColor: '#fff',
+                    bodyColor: '#fff',
+                    borderColor: '#333',
+                    borderWidth: 1,
+                    padding: 10,
+                    displayColors: false,
+                    callbacks: {
+                        label: function (context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            if (context.parsed.y !== null) {
+                                label += context.parsed.y.toFixed(5);
+                            }
+                            return label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    type: 'linear', // Key fix for correct history drawing
+                    grid: { display: false },
+                    ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }
+                },
+                y: {
+                    grid: { borderDash: [5, 5] },
+                    beginAtZero: false
+                }
+            }
+        };
+
+        // Loss Chart
+        const lossChart = new Chart(document.getElementById('lossChart'), {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Loss',
+                    data: [],
+                    borderColor: '#6366f1', // Indigo
+                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 6,
+                    fill: true,
+                    parsing: false // IMPORTANT: Assume data is strictly {x, y}
+                }]
+            },
+            options: commonOptions
+        });
+
+        // Points Chart
+        const pointsChart = new Chart(document.getElementById('pointsChart'), {
+            type: 'line',
+            data: {
+                datasets: [
+                    {
+                        label: 'Total Points',
+                        data: [],
+                        borderColor: '#ec4899', // Pink
+                        backgroundColor: 'rgba(236, 72, 153, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        pointHoverRadius: 6,
+                        fill: true,
+                        parsing: false,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Cloned',
+                        data: [],
+                        borderColor: '#3b82f6', // Blue
+                        backgroundColor: 'transparent',
+                        borderWidth: 1,
+                        pointRadius: 0,
+                        borderDash: [5, 5],
+                        parsing: false,
+                        yAxisID: 'y1'
+                    },
+                    {
+                        label: 'Split',
+                        data: [],
+                        borderColor: '#f59e0b', // Amber
+                        backgroundColor: 'transparent',
+                        borderWidth: 1,
+                        pointRadius: 0,
+                        borderDash: [5, 5],
+                        parsing: false,
+                        yAxisID: 'y1'
+                    },
+                    {
+                        label: 'Pruned',
+                        data: [],
+                        borderColor: '#ef4444', // Red
+                        backgroundColor: 'transparent',
+                        borderWidth: 1,
+                        pointRadius: 0,
+                        borderDash: [2, 2],
+                        parsing: false,
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                ...commonOptions,
+                scales: {
+                    ...commonOptions.scales,
+                    y: {
+                        ...commonOptions.scales.y,
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: { display: true, text: 'Total POints' },
+                    },
+                    y1: {
+                        type: 'linear', /* Linear is often better for counts unless huge range */
+                        display: true,
+                        position: 'right',
+                        grid: { drawOnChartArea: false }, // only want the grid lines for one axis
+                        title: { display: true, text: 'Densification Events' },
+                        suggestedMax: 1000
+                    }
+                }
+            }
+        });
+
+        // Lifetime Chart
+        const lifetimeChart = new Chart(document.getElementById('lifetimeChart'), {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Count',
+                    data: [],
+                    backgroundColor: '#10b981', // Emerald
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { autoSkip: true, maxTicksLimit: 10 }
+                    },
+                    y: {
+                        grid: { display: false },
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        // --- Data Fetching ---
+        function updateDashboard() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    const badge = document.getElementById('status-badge');
+                    badge.innerText = "ONLINE";
+                    badge.className = "status-pill";
+
+                    // Update Stats
+                    document.getElementById('iter-display').innerText = data.current_iteration.toLocaleString();
+                    document.getElementById('total-iter-display').innerText = data.total_iterations.toLocaleString();
+
+                    const seconds = Math.floor(data.elapsed_time);
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = seconds % 60;
+                    document.getElementById('time-display').innerText = `${h}h ${m}m ${s}s`;
+
+                    const percent = Math.min(100, (data.current_iteration / Math.max(1, data.total_iterations)) * 100);
+                    document.getElementById('progress-bar').style.width = percent + '%';
+                    document.getElementById('progress-text').innerText = percent.toFixed(1) + '%';
+
+                    document.getElementById('config-display').textContent = JSON.stringify(data.config, null, 2);
+
+                    // Update Charts
+                    // Using 'none' mode for performance update without animation
+                    lossChart.data.datasets[0].data = data.loss_history;
+                    lossChart.update('none');
+
+                    pointsChart.data.datasets[0].data = data.point_count_history;
+                    // Add Densification Stats
+                    if (data.clone_history) pointsChart.data.datasets[1].data = data.clone_history;
+                    if (data.split_history) pointsChart.data.datasets[2].data = data.split_history;
+                    if (data.pruned_history) pointsChart.data.datasets[3].data = data.pruned_history;
+
+                    pointsChart.update('none');
+
+                    // Update Lifetime if changed
+                    if (data.lifetime_hist_labels && data.lifetime_hist_labels.length > 0) {
+                        const newLabels = data.lifetime_hist_labels;
+                        const newCounts = data.lifetime_hist_counts;
+
+                        // Simple check to avoid re-render if identical
+                        // (Use a simple hash or length check in real apps, here we just update)
+                        if (lifetimeChart.data.labels[0] !== newLabels[0] || lifetimeChart.data.datasets[0].data[0] !== newCounts[0]) {
+                            lifetimeChart.data.labels = newLabels;
+                            lifetimeChart.data.datasets[0].data = newCounts;
+                            lifetimeChart.update();
+                        }
+                    }
+                })
+                .catch(err => {
+                    // console.error(err);
+                    const badge = document.getElementById('status-badge');
+                    badge.innerText = "OFFLINE";
+                    badge.className = "status-pill offline";
+                });
+        }
+
+        setInterval(updateDashboard, 2000);
+    </script>
+</body>
+
+</html>

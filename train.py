@@ -11,9 +11,13 @@
 
 import os
 import torch
+import cv2
 from random import randint
 from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
+from utils import web_logger_server
+from scene.cameras import MiniCam
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state, get_expon_lr_func
@@ -58,7 +62,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
+    iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
+
+    web_logger_server.start_server()
+    web_logger_server.init_logger(vars(opt), opt.iterations)
+
 
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
@@ -141,6 +150,46 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss.backward()
 
+        # Web Logger Render
+        render_req = web_logger_server.get_render_request()
+        if render_req:
+            try:
+                # Expects a dict with camera params
+                w = render_req.get("width", 800)
+                h = render_req.get("height", 600)
+                fovy = render_req.get("fovy", 1.0)
+                fovx = render_req.get("fovx", 1.0)
+                znear = render_req.get("znear", 0.01)
+                zfar = render_req.get("zfar", 100.0)
+                
+                view_matrix = torch.tensor(render_req["view_matrix"]).cuda().float()
+                proj_matrix = torch.tensor(render_req["proj_matrix"]).cuda().float()
+                
+                # Compute full proj (World2Clip) = View * Proj (in row-major / GL style it depends)
+                # MiniCam expects world_view_transform (World2View) and full_proj_transform
+                # Assuming incoming matrices are GL style (column major?) or row major?
+                # Usually WebGL sends column-major matrices.
+                # PyTorch3D / GS codebase usually uses row-major for storage but multiplies correctly.
+                # Let's assume the client sends what we need or consistent matrices.
+                # If render_req sends 'view_matrix' as World2View.
+                
+                full_proj_transform = view_matrix.unsqueeze(0).bmm(proj_matrix.unsqueeze(0)).squeeze(0)
+                
+                custom_cam = MiniCam(w, h, fovy, fovx, znear, zfar, view_matrix, full_proj_transform)
+                
+                # Render
+                render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifier=1.0)
+                img = render_pkg["render"]
+                
+                # Convert to bytes
+                img_8 = (torch.clamp(img, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
+                img_bytes = cv2.imencode('.jpg', img_8)[1].tobytes()
+                
+                web_logger_server.submit_render_result(img_bytes)
+            except Exception as e:
+                print(f"Web Viewer Render Error: {e}")
+
+
         iter_end.record()
 
         with torch.no_grad():
@@ -168,7 +217,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
+                    densification_stats = gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
+                else:
+                    densification_stats = None
+                
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
