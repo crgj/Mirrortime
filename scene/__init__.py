@@ -85,16 +85,15 @@ class Scene:
                                                            "point_cloud.ply"), args.train_test_exp)
         else:
             #WDD [2024-07-30] 原因: 添加帧数参数以接收帧数信息。
-            frame_count=max_time_idx = max(camera.time_idx for camera in scene_info.train_cameras)+1
-            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent,frame_count)
+            self.frame_count= max(camera.time_idx for camera in scene_info.train_cameras)+1
+            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent,self.frame_count)
 
     def save(self, iteration):
         # WDD [2024-08-01] [修复4DGS保存ply的错误，并为每个时间帧分别保存]
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        # 获取总帧数
-        frame_count = self.gaussians._opacity.shape[1]
+
         # 为每个时间帧保存一个ply文件
-        for t in range(frame_count):
+        for t in range(self.frame_count):
             ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
             self.gaussians.save_ply(ply_path, time_idx=t)
         exposure_dict = {

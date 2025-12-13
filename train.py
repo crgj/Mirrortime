@@ -12,6 +12,7 @@
 import os
 import torch
 import cv2
+import time
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from utils.loss_utils import l1_loss, ssim
@@ -79,6 +80,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    
+    # WDD [2024-07-31] [For GUI Dynamic Playback]
+    last_time_update = time.time()
+    current_time_idx = 0
+    # Use total_frames because opacity is now [N, 1] + Network
+    frame_count = getattr(scene.gaussians, "total_frames", 1)
+
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -87,6 +95,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
+                    # WDD [2024-07-31] [Auto-cycle time index every 0.2s]
+                    if time.time() - last_time_update > 0.2:
+                        last_time_update = time.time()
+                        current_time_idx = (current_time_idx + 1) % frame_count
+                    custom_cam.time_idx = current_time_idx
+                    
                     net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
