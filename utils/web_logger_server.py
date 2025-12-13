@@ -35,7 +35,14 @@ class WebLoggerState:
         
         # Histogram data
         self.lifetime_hist_labels = []
+        # Histogram data
+        self.lifetime_hist_labels = []
         self.lifetime_hist_counts = []
+        self.short_lifetime_hist_labels = [] # WDD [2024-08-01]
+        self.short_lifetime_hist_counts = [] # WDD [2024-08-01]
+        self.opacity_hist_labels = [] # WDD [2024-08-01]
+        self.opacity_hist_counts = [] # WDD [2024-08-01]
+
         
         # Config
         self.config = {}
@@ -71,7 +78,13 @@ def get_status():
             "split_history": state.split_history,
             "pruned_history": state.pruned_history,
             "lifetime_hist_labels": state.lifetime_hist_labels,
+            "lifetime_hist_labels": state.lifetime_hist_labels,
             "lifetime_hist_counts": state.lifetime_hist_counts,
+            "short_lifetime_hist_labels": state.short_lifetime_hist_labels, # WDD [2024-08-01]
+            "short_lifetime_hist_counts": state.short_lifetime_hist_counts, # WDD [2024-08-01]
+            "opacity_hist_labels": state.opacity_hist_labels, # WDD [2024-08-01]
+            "opacity_hist_counts": state.opacity_hist_counts, # WDD [2024-08-01]
+
             "config": state.config
         }
 
@@ -148,7 +161,8 @@ def init_logger(config, total_iterations):
         state.total_iterations = total_iterations
         state.training_start_time = time.time()
 
-def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densification_stats=None):
+def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densification_stats=None, opacity_tensor=None):
+
     with state.lock:
         state.current_iteration = iteration
         
@@ -197,7 +211,16 @@ def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densificatio
                 else:
                     samples = lifetime_tensor.detach().cpu().numpy().flatten()
                 
-                durations = samples * 2.0 # Approximation
+                # Check if this is "active duration" (integer frames) or "lifetime_w" (float parameter)
+                # Heuristic: if mean is > 5 and it looks like integers (allow for float representation), treat as duration
+                # Or better, just rely on range.
+                # WDD: The user explicitly asked for "active duration". 
+                # If the values are large (e.g. > 1.0 on average), we assume it's frame count and don't scale.
+                
+                if samples.mean() > 2.0: # Likely frame counts
+                     durations = samples
+                else:
+                     durations = samples * 2.0 # Approximation for lifetime_w
                 
                 # Compute histogram
                 # Frame range might be large, clamp to reasonable max (e.g. 1000 frames) or auto
@@ -205,10 +228,36 @@ def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densificatio
                 hist, bin_edges = np.histogram(durations, bins=30, range=(0, MAX_FRAME))
                 
                 # Format labels with decimals for precision
+                # Format labels with decimals for precision
                 state.lifetime_hist_labels = [f"{bin_edges[i]:.2f}" for i in range(len(hist))]
                 state.lifetime_hist_counts = hist.tolist()
+                
+                # WDD [2024-08-01] Short Duration Histogram (0 - MAX_FRAME/2)
+                hist_short, bin_edges_short = np.histogram(durations, bins=30, range=(0, MAX_FRAME / 2.0))
+                state.short_lifetime_hist_labels = [f"{bin_edges_short[i]:.2f}" for i in range(len(hist_short))]
+                state.short_lifetime_hist_counts = hist_short.tolist()
+
             except Exception as e:
                 print(f"Histogram error: {e}")
+
+        # Compute Opacity Histogram
+        if opacity_tensor is not None and iteration % 200 == 0:
+            try:
+                # Sample if too large
+                if opacity_tensor.shape[0] > 100000:
+                    indices = torch.randint(0, opacity_tensor.shape[0], (100000,), device=opacity_tensor.device)
+                    samples = opacity_tensor[indices].detach().cpu().numpy().flatten()
+                else:
+                    samples = opacity_tensor.detach().cpu().numpy().flatten()
+                
+                # Opacity is 0.0 to 1.0
+                hist, bin_edges = np.histogram(samples, bins=20, range=(0.0, 1.0))
+                state.opacity_hist_labels = [f"{bin_edges[i]:.2f}" for i in range(len(hist))]
+                state.opacity_hist_counts = hist.tolist()
+            except Exception as e:
+                print(f"Opacity Histogram error: {e}")
+
+
 
 def get_render_request():
     if not state.render_queue.empty():

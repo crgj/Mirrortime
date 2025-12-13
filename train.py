@@ -68,6 +68,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     web_logger_server.start_server()
     web_logger_server.init_logger(vars(opt), opt.iterations)
+    web_logger_server.set_max_frames(scene.frame_count)
+
 
 
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
@@ -236,10 +238,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 else:
                     densification_stats = None
                 
-                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
-                
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+
+            else:
+                densification_stats = None
+
+            # Logging (Always)
+            if iteration % 200 == 0:
+                # WDD [2024-07-31] Log Active Duration (histogram)
+                active_duration_tensor = gaussians.compute_active_duration(threshold=0.05)
+                opacity_tensor = gaussians.get_opacity # Get current base opacity or combined if valid
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], lifetime_tensor=active_duration_tensor, densification_stats=densification_stats, opacity_tensor=opacity_tensor)
+            else:
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
+
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -330,7 +343,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])

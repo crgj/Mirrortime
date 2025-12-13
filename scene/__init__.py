@@ -97,6 +97,16 @@ class Scene:
         for t in range(self.frame_count):
             ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
             self.gaussians.save_ply(ply_path, time_idx=t)
+            
+            # WDD [2024-08-01] Save Filtered PLY (Opacity > 0.05)
+            filtered_ply_path = os.path.join(point_cloud_path, f"point_cloud_filtered_t{t}.ply")
+            
+            # Compute mask
+            op_t = self.gaussians.get_opacity_at_time(t).squeeze()
+            mask = (op_t > 0.05)
+            
+            self.gaussians.save_ply(filtered_ply_path, time_idx=t, mask=mask)
+
         exposure_dict = {
             image_name: self.gaussians.get_exposure_from_name(image_name).detach().cpu().numpy().tolist()
             for image_name in self.gaussians.exposure_mapping

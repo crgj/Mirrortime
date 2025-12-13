@@ -144,6 +144,22 @@ class GaussianModel:
         else:
             return self.pretrained_exposures[image_name]
     
+    # WDD [2024-07-31] For Active Duration Visualization
+    def compute_active_duration(self, threshold=0.01):
+        total_frames = getattr(self, "total_frames", 100)
+        active_count = torch.zeros((self.get_xyz.shape[0]), dtype=torch.float32, device="cuda")
+        
+        # Sample frames to approximate duration if total_frames is very large
+        # For now, if total_frames < 200, we check all.
+        samples = range(total_frames)
+        
+        for t_idx in samples:
+            op = self.get_opacity_at_time(t_idx).squeeze()
+            active_count += (op > threshold).float()
+            
+        return active_count
+
+    
     def get_opacity_at_time(self, time_idx):
         # 1. Base Opacity
         base_opacity_val = self.get_opacity
@@ -303,7 +319,7 @@ class GaussianModel:
             l.append('rot_{}'.format(i))
         return l
 
-    def save_ply(self, path, time_idx=None):
+    def save_ply(self, path, time_idx=None, mask=None):
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -319,6 +335,20 @@ class GaussianModel:
 
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
+        
+        # Apply mask if provided
+        if mask is not None:
+             # Ensure mask is numpy
+             if isinstance(mask, torch.Tensor):
+                 mask = mask.cpu().numpy()
+             
+             xyz = xyz[mask]
+             normals = normals[mask]
+             f_dc = f_dc[mask]
+             f_rest = f_rest[mask]
+             opacities = opacities[mask]
+             scale = scale[mask]
+             rotation = rotation[mask]
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 

@@ -12,11 +12,11 @@
             "console": "integratedTerminal",
             "args": [
                 "-r",
-                "8",
+                "2",
                 "-s",
-                "/home/gs/gs/data/20251126145547/5547/04/",
+                "/home/gs/gs/data/20251126145547/small/04/",
                 "-m",
-                "/home/gs/gs/data/20251126145547/test1213"
+                "/home/gs/gs/data/20251126145547/testall1213"
             ]
         }
     ]

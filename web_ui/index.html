@@ -197,7 +197,6 @@
                     </div>
                 </div>
 
-                <!-- Points -->
                 <div class="card">
                     <div class="card-header">Gaussian Count</div>
                     <div class="card-body">
@@ -206,20 +205,46 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Opacity Distribution -->
+                <div class="card">
+                    <div class="card-header">Opacity Distribution</div>
+                    <div class="card-body">
+                        <div style="height: 200px;">
+                            <canvas id="opacityChart"></canvas>
+                        </div>
+                        <div class="text-center mt-2 text-muted small">Opacity (0.0 - 1.0)</div>
+                    </div>
+                </div>
+
             </div>
 
             <!-- Right Column: Secondary Stats -->
             <div class="col-lg-4">
                 <!-- Lifetime -->
                 <div class="card">
-                    <div class="card-header">Lifetime Distribution</div>
+                    <div class="card-header">Lifetime Distribution (Full)</div>
                     <div class="card-body">
-                        <div style="height: 250px;">
+                        <div style="height: 200px;">
                             <canvas id="lifetimeChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Short Lifetime -->
+                <div class="card">
+                    <div class="card-header">Active Duration (Short: 0 - 50%)</div>
+                    <div class="card-body">
+                        <div style="height: 200px;">
+                            <canvas id="shortLifetimeChart"></canvas>
                         </div>
                         <div class="text-center mt-2 text-muted small">Duration (Frames)</div>
                     </div>
                 </div>
+
+
+
+
 
                 <!-- Config -->
                 <div class="card">
@@ -407,7 +432,67 @@
             }
         });
 
+        // Short Lifetime Chart
+        const shortLifetimeChart = new Chart(document.getElementById('shortLifetimeChart'), {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Count',
+                    data: [],
+                    backgroundColor: '#f59e0b', // Amber
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { autoSkip: true, maxTicksLimit: 10 }
+                    },
+                    y: {
+                        grid: { display: false },
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+
+        // Opacity Chart
+        const opacityChart = new Chart(document.getElementById('opacityChart'), {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Count',
+                    data: [],
+                    backgroundColor: '#8b5cf6', // Violet
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { autoSkip: true, maxTicksLimit: 10 }
+                    },
+                    y: {
+                        grid: { display: false },
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
         // --- Data Fetching ---
+
         function updateDashboard() {
             fetch('/api/status')
                 .then(response => response.json())
@@ -458,8 +543,40 @@
                             lifetimeChart.update();
                         }
                     }
+
+                    // Update Short Lifetime
+                    if (data.short_lifetime_hist_labels && data.short_lifetime_hist_labels.length > 0) {
+                        const newLabelsS = data.short_lifetime_hist_labels;
+                        const newCountsS = data.short_lifetime_hist_counts;
+
+                        // Check if chart data exists to prevent errors on first load
+                        if (shortLifetimeChart.data.labels.length === 0 ||
+                            shortLifetimeChart.data.labels[0] !== newLabelsS[0] ||
+                            shortLifetimeChart.data.datasets[0].data[0] !== newCountsS[0]) {
+
+                            shortLifetimeChart.data.labels = newLabelsS;
+                            shortLifetimeChart.data.datasets[0].data = newCountsS;
+                            shortLifetimeChart.update();
+                        }
+                    }
+
+                    // Update Opacity Chart
+                    if (data.opacity_hist_labels && data.opacity_hist_labels.length > 0) {
+                        const newLabelsOp = data.opacity_hist_labels;
+                        const newCountsOp = data.opacity_hist_counts;
+
+                        if (opacityChart.data.labels.length === 0 ||
+                            opacityChart.data.labels[0] !== newLabelsOp[0] ||
+                            opacityChart.data.datasets[0].data[0] !== newCountsOp[0]) {
+
+                            opacityChart.data.labels = newLabelsOp;
+                            opacityChart.data.datasets[0].data = newCountsOp;
+                            opacityChart.update();
+                        }
+                    }
                 })
                 .catch(err => {
+
                     // console.error(err);
                     const badge = document.getElementById('status-badge');
                     badge.innerText = "OFFLINE";
