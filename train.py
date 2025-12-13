@@ -85,7 +85,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     last_time_update = time.time()
     current_time_idx = 0
     # Use total_frames because opacity is now [N, 1] + Network
-    frame_count = getattr(scene.gaussians, "total_frames", 1)
+    frame_count = scene.frame_count
 
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -98,6 +98,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # WDD [2024-07-31] [Auto-cycle time index every 0.2s]
                     if time.time() - last_time_update > 0.2:
                         last_time_update = time.time()
+
                         current_time_idx = (current_time_idx + 1) % frame_count
                     custom_cam.time_idx = current_time_idx
                     

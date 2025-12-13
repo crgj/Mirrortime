@@ -27,6 +27,9 @@ try:
 except:
     pass
 
+from scene.temporal_network import TemporalNetwork 
+
+
 class GaussianModel:
 
     def setup_functions(self):
@@ -61,7 +64,9 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
+        self.temporal_network = None
         self.percent_dense = 0
+
         self.spatial_lr_scale = 0
         self.setup_functions()
 
@@ -139,6 +144,59 @@ class GaussianModel:
         else:
             return self.pretrained_exposures[image_name]
     
+    def get_opacity_at_time(self, time_idx):
+        # 1. Base Opacity
+        base_opacity_val = self.get_opacity
+        
+        # 2. Network Delta
+        # Need normalized inputs [0, 1]
+        # Normalize XYZ
+        # Use simple min-max normalization based on bounds (can be set during training)
+        # Using spatial_lr_scale as a proxy for scene radius
+        
+        xyz = self._xyz.detach() # Detach to avoid cycle? No, we want gradients.
+        
+        # We need a bound. Let's use self.spatial_lr_scale which is ~5 * radius
+        # Or more robustly, use the initial camera extent.
+        # Assuming scene is roughly centered at 0 or we can shift it.
+        # For simplicity in this implementation, we assume scene fits in [-extent, extent]
+        extent = self.spatial_lr_scale * 0.2 # spatial_lr was 5 * radius? no, see create_from_pcd
+        # In create_from_pcd: spatial_lr_scale = spatial_lr_scale
+        # In train.py: spatial_lr_scale = 5 * dist_avg
+        
+        # Let's just use a reasonable bound for now, say [-10, 10] or normalize dynamically?
+        # Hash Grid expects [0, 1].
+        # Let's map [-extent, extent] to [0, 1]
+        
+        # Actually, self.percent_dense * scene_extent was used for bounds check.
+        
+        # Let's store scene_radius in create_from_pcd
+        radius = getattr(self, "scene_radius", 5.0) 
+        
+        normalized_xyz = (xyz + radius) / (2 * radius)
+        normalized_xyz = torch.clamp(normalized_xyz, 0, 1)
+
+        # Normalize Time
+        # time_idx is int 0..F
+        # We need total Frames
+        total_frames = getattr(self, "total_frames", 100)
+        if isinstance(time_idx, torch.Tensor):
+            normalized_t = time_idx / max(1, total_frames - 1)
+        else:
+            normalized_t = torch.tensor(time_idx / max(1, total_frames - 1), device="cuda")
+            
+        t = normalized_t.reshape(1, 1).repeat(xyz.shape[0], 1)
+
+        
+        delta = self.temporal_network(normalized_xyz, t)
+        
+        # Combine
+        # Base is sigmoid(param). We want sigmoid(param + delta)
+        # So we work in logit space
+        
+        opacity_logit = self._opacity + delta
+        return self.opacity_activation(opacity_logit)
+
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
@@ -161,8 +219,13 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        #WDD 这里增加了Frame_count参数
-        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda"))
+        #WDD [2024-07-30] Reverting to single opacity per point + Network
+        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        
+        self.scene_radius = spatial_lr_scale
+        self.total_frames = Frame_count
+        self.temporal_network = TemporalNetwork().cuda()
+
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -198,6 +261,9 @@ class GaussianModel:
             except:
                 # A special version of the rasterizer is required to enable sparse adam
                 self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        
+        # Add Temporal Network params
+        self.optimizer.add_param_group({'params': self.temporal_network.parameters(), 'lr': training_args.feature_lr, "name": "temporal_network"})
 
         self.exposure_optimizer = torch.optim.Adam([self._exposure])
 
@@ -245,11 +311,11 @@ class GaussianModel:
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         
-        opacities_full = self._opacity.detach().cpu().numpy()
-        if time_idx is not None and opacities_full.ndim == 2:
-            opacities = opacities_full[:, time_idx:time_idx+1]
+        if time_idx is not None:
+            opacities = inverse_sigmoid(self.get_opacity_at_time(time_idx).detach()).cpu().numpy()
         else:
-            opacities = opacities_full
+            opacities = self._opacity.detach().cpu().numpy()
+
 
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
@@ -338,7 +404,10 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] == "temporal_network":
+                continue
             stored_state = self.optimizer.state.get(group['params'][0], None)
+
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
                 stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
@@ -373,7 +442,10 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] == "temporal_network":
+                continue
             assert len(group["params"]) == 1
+
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
@@ -475,7 +547,26 @@ class GaussianModel:
         n_cloned = self.densify_and_clone(grads, max_grad, extent)
         n_split = self.densify_and_split(grads, max_grad, extent)
 
-        prune_mask = (self.get_opacity < min_opacity).all(dim=-1)
+        # Pruning: Check max opacity over time
+        # WDD [2024-07-31] [For 4D Hash Grid Opacity]
+        # Sample K time frames to find max opacity for each point
+        total_frames = self.total_frames
+        samples = torch.linspace(0, total_frames - 1, total_frames, device="cuda")
+        
+        # Init with base opacity (or min possible)
+        max_opacities = torch.zeros_like(self.get_opacity).squeeze()
+        
+        for t_idx in samples:
+            # t_idx is float from linspace, convert to int for get_opacity_at_time??
+            # get_opacity_at_time takes time_idx and normalizes it. 
+            # It expects float or int. If we pass float, it works if we don't cast to int.
+            # get_opacity_at_time logic: t = time_idx / ...
+            op_t = self.get_opacity_at_time(t_idx).squeeze()
+            max_opacities = torch.max(max_opacities, op_t)
+            
+        prune_mask = (max_opacities < min_opacity)
+
+
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent

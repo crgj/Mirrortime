@@ -87,6 +87,7 @@ class Scene:
             #WDD [2024-07-30] 原因: 添加帧数参数以接收帧数信息。
             self.frame_count= max(camera.time_idx for camera in scene_info.train_cameras)+1
             self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent,self.frame_count)
+            self.gaussians.total_frames = self.frame_count
 
     def save(self, iteration):
         # WDD [2024-08-01] [修复4DGS保存ply的错误，并为每个时间帧分别保存]
