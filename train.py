@@ -68,6 +68,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     web_logger_server.start_server()
     web_logger_server.init_logger(vars(opt), opt.iterations)
+    web_logger_server.set_max_frames(scene.frame_count)
 
 
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
@@ -85,7 +86,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     last_time_update = time.time()
     current_time_idx = 0
     # Use total_frames because opacity is now [N, 1] + Network
-    frame_count = getattr(scene.gaussians, "total_frames", 1)
+    frame_count = scene.frame_count
 
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -98,6 +99,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # WDD [2024-07-31] [Auto-cycle time index every 0.2s]
                     if time.time() - last_time_update > 0.2:
                         last_time_update = time.time()
+
                         current_time_idx = (current_time_idx + 1) % frame_count
                     custom_cam.time_idx = current_time_idx
                     
@@ -235,10 +237,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 else:
                     densification_stats = None
                 
-                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
-                
+                                
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+            
+            
+            if iteration % 200 == 0:
+                # WDD [2024-07-31] Log Active Duration (histogram)
+                active_duration_tensor = gaussians.compute_active_duration(threshold=0.05)
+                opacity_tensor = gaussians.get_opacity # Get current base opacity or combined if valid
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], lifetime_tensor=active_duration_tensor, densification_stats=densification_stats, opacity_tensor=opacity_tensor)
+            else:
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
+
 
             # Optimizer step
             if iteration < opt.iterations:

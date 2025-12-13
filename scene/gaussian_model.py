@@ -57,6 +57,12 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+
+         # WDD [2024-08-07] [在构造函数中初始化与时间相关的参数，保持代码结构一致性]
+        self._lifetime_mu = torch.empty(0) # 时间中心
+        self._lifetime_w = torch.empty(0) # 时间宽度
+        self._lifetime_k = torch.empty(0) # 时间边缘锐度
+
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -74,6 +80,10 @@ class GaussianModel:
             self._scaling,
             self._rotation,
             self._opacity,
+             # WDD [2024-08-07] [在模型捕获和恢复中加入lifetime参数]
+            self._lifetime_mu,
+            self._lifetime_w,
+            self._lifetime_k,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
@@ -90,6 +100,10 @@ class GaussianModel:
         self._rotation, 
         self._opacity,
         self.max_radii2D, 
+        # WDD [2024-08-07] [在模型捕获和恢复中加入lifetime参数]
+        self._lifetime_mu,
+        self._lifetime_w,
+        self._lifetime_k,
         xyz_gradient_accum, 
         denom,
         opt_dict, 
@@ -133,6 +147,56 @@ class GaussianModel:
     def get_exposure(self):
         return self._exposure
 
+    def lifetime(self, t, mu=None, w=None, k=None):
+        """
+        # WDD [2024-08-07] [使用两个Sigmoid函数实现的平滑盒函数（数值稳定版），返回在时间t的透明度乘数（0-1之间）]
+        """
+        if mu is None:
+            # WDD [2024-08-07] [如果未提供参数，则使用模型自身的lifetime参数]
+            mu = self._lifetime_mu
+        if w is None:
+            w = self._lifetime_w
+        if k is None:
+            k = self._lifetime_k
+            
+        # Ensure w is positive
+        # WDD [2024-08-07] [确保w（半宽度）为正]
+        w = torch.abs(w)
+        # Ensure k is positive for proper sigmoid behavior
+        # WDD [2024-08-07] [确保k（锐度）为正，以保证sigmoid函数的正常行为]
+        k = torch.abs(k)
+        
+        # WDD [2024-08-07] [使用torch.sigmoid以提高数值稳定性，表达式 1 / (1 + exp(-x)) 等价于 sigmoid(x)]
+        # WDD [2024-08-07] [第一个Sigmoid：在 (mu - w) 处创建上升沿]
+        left_sigmoid = torch.sigmoid(k * (t - (mu - w)))
+        
+        # WDD [2024-08-07] [第二个Sigmoid：在 (mu + w) 处创建下降沿，等价于 sigmoid(-k * (t - (mu + w)))]
+        right_sigmoid = torch.sigmoid(-k * (t - (mu + w)))
+        
+        return left_sigmoid * right_sigmoid
+    
+    def compute_active_duration(self, threshold=0.01):
+        total_frames = getattr(self, "total_frames", 100)
+        active_count = torch.zeros((self.get_xyz.shape[0]), dtype=torch.float32, device="cuda")
+        
+        # Sample frames to approximate duration if total_frames is very large
+        # For now, if total_frames < 200, we check all.
+        samples = range(total_frames)
+        
+        for t_idx in samples:
+            op = self.get_opacity_at_time(t_idx).squeeze()
+            active_count += (op > threshold).float()
+            
+        return active_count
+
+    def get_opacity_at_time(self, t):
+        """
+        # WDD [2024-08-07] [通过基础透明度和lifetime函数计算在时间t的最终透明度]
+        """
+        base_opacity = self.get_opacity
+        lifetime_value = self.lifetime(t)
+        return base_opacity * lifetime_value
+
     def get_exposure_from_name(self, image_name):
         if self.pretrained_exposures is None:
             return self._exposure[self.exposure_mapping[image_name]]
@@ -161,8 +225,20 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        #WDD 这里增加了Frame_count参数
-        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda"))
+        # WDD [2024-08-07] [使用标准值初始化基础透明度]
+        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        
+        # WDD [2024-08-07] [初始化lifetime参数]
+        # WDD [2024-08-07] [mu: 中心时间（在序列中间随机化）]
+        lifetime_mu = torch.full((fused_point_cloud.shape[0], 1), Frame_count / 2.0, dtype=torch.float, device="cuda")
+        # WDD [2024-08-07] [添加一些噪声以打破对称性]
+        lifetime_mu = lifetime_mu + torch.randn_like(lifetime_mu) * (Frame_count / 10.0)
+        
+        # WDD [2024-08-07] [w: 半宽度（初始化以覆盖合理的时间跨度）]
+        lifetime_w = torch.full((fused_point_cloud.shape[0], 1), Frame_count / 4.0, dtype=torch.float, device="cuda")
+        
+        # WDD [2024-08-07] [k: 边缘锐度（初始化为中等值）]
+        lifetime_k = torch.full((fused_point_cloud.shape[0], 1), 5.0, dtype=torch.float, device="cuda")
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -170,6 +246,12 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
+
+        # WDD [2024-08-07] [将lifetime参数设置为可训练的nn.Parameter]
+        self._lifetime_mu = nn.Parameter(lifetime_mu.requires_grad_(True))
+        self._lifetime_w = nn.Parameter(lifetime_w.requires_grad_(True))
+        self._lifetime_k = nn.Parameter(lifetime_k.requires_grad_(True))
+
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
@@ -186,6 +268,11 @@ class GaussianModel:
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
+            # WDD [2024-08-07] [为lifetime参数设置学习率]
+            {'params': [self._lifetime_mu], 'lr': training_args.opacity_lr * 0.5, "name": "lifetime_mu"},
+            {'params': [self._lifetime_w], 'lr': training_args.opacity_lr * 0.5, "name": "lifetime_w"},
+            {'params': [self._lifetime_k], 'lr': training_args.opacity_lr * 0.1, "name": "lifetime_k"},
+           
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
@@ -245,11 +332,16 @@ class GaussianModel:
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         
-        opacities_full = self._opacity.detach().cpu().numpy()
-        if time_idx is not None and opacities_full.ndim == 2:
-            opacities = opacities_full[:, time_idx:time_idx+1]
+        if time_idx is not None:
+            # WDD [2024-08-07] [1. 获取当前时刻的真实透明度 (0 ~ 1)]
+            final_opacity_prob = self.get_opacity_at_time(time_idx)
+            # WDD [2024-08-07] [2. 截断以防止 Logit 溢出 (0.001 ~ 0.999)]
+            # final_opacity_prob = torch.clamp(final_opacity_prob, 0.001, 0.999)
+            # WDD [2024-08-07] [3. 转换回 Logit]
+            opacities = inverse_sigmoid(final_opacity_prob).detach().cpu().numpy()
         else:
-            opacities = opacities_full
+            # WDD [2024-08-07] [如果不带时间，直接保存 _base_opacity 参数 (它本身就是 Logit)]
+            opacities = self._opacity.detach().cpu().numpy()
 
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
@@ -310,6 +402,8 @@ class GaussianModel:
         rots = np.zeros((xyz.shape[0], len(rot_names)))
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        
+        
 
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
@@ -364,6 +458,10 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
+        self._lifetime_mu = optimizable_tensors["lifetime_mu"]
+        self._lifetime_w = optimizable_tensors["lifetime_w"]
+        self._lifetime_k = optimizable_tensors["lifetime_k"]
+
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
         self.denom = self.denom[valid_points_mask]
@@ -392,11 +490,14 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities,new_lifetime_mu, new_lifetime_w, new_lifetime_k, new_scaling, new_rotation, new_tmp_radii):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
         "opacity": new_opacities,
+        "lifetime_mu": new_lifetime_mu,
+        "lifetime_w": new_lifetime_w,
+        "lifetime_k": new_lifetime_k,
         "scaling" : new_scaling,
         "rotation" : new_rotation}
 
@@ -405,6 +506,9 @@ class GaussianModel:
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
+        self._lifetime_mu = optimizable_tensors["lifetime_mu"]
+        self._lifetime_w = optimizable_tensors["lifetime_w"]
+        self._lifetime_k = optimizable_tensors["lifetime_k"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -437,7 +541,12 @@ class GaussianModel:
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tmp_radii)
+        new_lifetime_mu = self._lifetime_mu[selected_pts_mask].repeat(N,1)
+        new_lifetime_w = self._lifetime_w[selected_pts_mask].repeat(N,1)
+        new_lifetime_k = self._lifetime_k[selected_pts_mask].repeat(N,1)
+
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_lifetime_mu, new_lifetime_w, new_lifetime_k, new_scaling, new_rotation, new_tmp_radii)
+
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
@@ -458,12 +567,17 @@ class GaussianModel:
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
+
+        new_lifetime_mu = self._lifetime_mu[selected_pts_mask]
+        new_lifetime_w = self._lifetime_w[selected_pts_mask]
+        new_lifetime_k = self._lifetime_k[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
         new_tmp_radii = self.tmp_radii[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_lifetime_mu, new_lifetime_w, new_lifetime_k, new_scaling, new_rotation, new_tmp_radii)
+
         
         return n_cloned
 
@@ -475,11 +589,41 @@ class GaussianModel:
         n_cloned = self.densify_and_clone(grads, max_grad, extent)
         n_split = self.densify_and_split(grads, max_grad, extent)
 
-        prune_mask = (self.get_opacity < min_opacity).all(dim=-1)
+
+        total_frames = self.total_frames
+        samples = torch.linspace(0, total_frames - 1, total_frames, device="cuda")
+        
+        # Init with base opacity (or min possible)
+        max_opacities = torch.zeros_like(self.get_opacity).squeeze()
+        
+        for t_idx in samples:
+            # t_idx is float from linspace, convert to int for get_opacity_at_time??
+            # get_opacity_at_time takes time_idx and normalizes it. 
+            # It expects float or int. If we pass float, it works if we don't cast to int.
+            # get_opacity_at_time logic: t = time_idx / ...
+            op_t = self.get_opacity_at_time(t_idx).squeeze()
+            max_opacities = torch.max(max_opacities, op_t)
+            
+        prune_mask = (max_opacities < min_opacity)
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+        
+        # # #添加xyz梯度过低的点的裁剪
+        # if self.denom.min() > 50:  # 确保累积了足够多次
+        #     grad_threshold = grads.mean() * 0.01  # 低于平均值1%的点
+        #     low_grad_mask = (grads.squeeze() < grad_threshold)
+            
+        #     # 安全检查：最多删除20%的点
+        #     max_prune = int(0.2 * prune_mask.shape[0])
+        #     if low_grad_mask.sum() > max_prune:
+        #         # 只删除梯度最低的那些
+        #         _, indices = grads.squeeze().topk(max_prune, largest=False)
+        #         low_grad_mask = torch.zeros_like(low_grad_mask)
+        #         low_grad_mask[indices] = True
+            
+        #     prune_mask = torch.logical_or(prune_mask, low_grad_mask)
         
         n_pruned = prune_mask.sum().item()
         self.prune_points(prune_mask)
