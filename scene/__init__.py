@@ -40,7 +40,11 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
-        if os.path.exists(os.path.join(args.source_path, "sparse")):
+        # WDD注释: 尝试从4DGS数据集加载场景信息
+        if any(f.startswith("frame") and f[5:].isdigit() and os.path.isdir(os.path.join(args.source_path, f)) for f in os.listdir(args.source_path)): #WDD注释
+            print("Found frame... folder, assuming 4DGS data set!") #WDD注释
+            scene_info = sceneLoadTypeCallbacks["4DGS"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp) #WDD注释
+        elif os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
@@ -80,11 +84,19 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"), args.train_test_exp)
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
+            #WDD [2024-07-30] 原因: 添加帧数参数以接收帧数信息。
+            frame_count=max_time_idx = max(camera.time_idx for camera in scene_info.train_cameras)+1
+            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent,frame_count)
 
     def save(self, iteration):
+        # WDD [2024-08-01] [修复4DGS保存ply的错误，并为每个时间帧分别保存]
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        # 获取总帧数
+        frame_count = self.gaussians._opacity.shape[1]
+        # 为每个时间帧保存一个ply文件
+        for t in range(frame_count):
+            ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
+            self.gaussians.save_ply(ply_path, time_idx=t)
         exposure_dict = {
             image_name: self.gaussians.get_exposure_from_name(image_name).detach().cpu().numpy().tolist()
             for image_name in self.gaussians.exposure_mapping

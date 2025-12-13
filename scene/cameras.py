@@ -17,11 +17,11 @@ from utils.general_utils import PILtoTorch
 import cv2
 
 class Camera(nn.Module):
-    def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, depth_params, image, invdepthmap,
-                 image_name, uid,
+    def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, image, 
+                 image_name, uid, time_idx, # WDD [2024-07-30] 原因: 增加time_idx参数以接收时间信息。
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
-                 train_test_exp = False, is_test_dataset = False, is_test_view = False
-                 ):
+                 train_test_exp = False, is_test_dataset = False, is_test_view = False,
+                 invdepthmap=None,depth_params=None):
         super(Camera, self).__init__()
 
         self.uid = uid
@@ -31,6 +31,7 @@ class Camera(nn.Module):
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
+        self.time_idx = time_idx # WDD [2024-07-30] 原因: 将时间索引保存为相机的一个属性。
 
         try:
             self.data_device = torch.device(data_device)
@@ -100,4 +101,3 @@ class MiniCam:
         self.full_proj_transform = full_proj_transform
         view_inv = torch.inverse(self.world_view_transform)
         self.camera_center = view_inv[3][:3]
-
