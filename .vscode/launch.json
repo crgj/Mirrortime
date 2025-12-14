@@ -14,9 +14,9 @@
                 "-r",
                 "8",
                 "-s",
-                "/home/momo/Desktop/test_data/frames/",
+                "/home/momo/Desktop/1112/test_data/",
                 "-m",
-                "/home/momo/Desktop/test_data/output1213"
+                "/home/momo/Desktop/1112/output1213"
             ]
         }
     ]

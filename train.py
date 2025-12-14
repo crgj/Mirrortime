@@ -13,6 +13,7 @@ import os
 import torch
 import cv2
 import time
+import random
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from utils.loss_utils import l1_loss, ssim
@@ -25,6 +26,12 @@ from utils.general_utils import safe_state, get_expon_lr_func
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
+from torch.utils.data import DataLoader
+from scene.dataset import FourDDataset
+
+def custom_collate_fn(batch):
+    # Batch is a list of Camera objects
+    return batch
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 try:
@@ -74,8 +81,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
-    viewpoint_stack = scene.getTrainCameras().copy()
-    viewpoint_indices = list(range(len(viewpoint_stack)))
+    first_iter += 1
+    
+    # DataLoader setup
+    torch.cuda.empty_cache()
+    dataloader = DataLoader(scene.getTrainDataset(), batch_size=opt.batch_size, shuffle=True, num_workers=4, collate_fn=custom_collate_fn, persistent_workers=True, prefetch_factor=2)
+    loader_iter = iter(dataloader)
+    batch_viewpoint_stack = []
+    
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
 
@@ -89,6 +102,55 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     frame_count = scene.frame_count
 
     for iteration in range(first_iter, opt.iterations + 1):
+        # Get next batch
+        if not batch_viewpoint_stack:
+            try:
+                batch_cameras = next(loader_iter)
+            except StopIteration:
+                loader_iter = iter(dataloader)
+                batch_cameras = next(loader_iter)
+            
+            # Load data to GPU
+            current_batch_cameras = batch_cameras
+            for cam in current_batch_cameras:
+                cam.to_device("cuda")
+            
+            # Use this batch for opt.batch_iterations (resampling from it)
+            # Actually, standard DataLoader usage implies we train on this batch once?
+            # User's previous plan: "Train on this batch for multiple iterations (enough to amortize the transfer cost)"
+            
+            batch_viewpoint_stack = []
+            # We want to train on this *set* of cameras for multiple steps.
+            # So we just keep them in current_batch_cameras.
+            # But the loop is 'for iteration in range...'.
+            # We need to detect when to switch batch.
+
+        # Logic:
+        # We need a batch present. We hold it for `opt.batch_iterations`.
+        # So we only fetch new batch if (iteration % batch_iterations == 0) etc.
+        # But we are inside a big loop.
+
+        # Let's align with previous logic:
+        # If we need to switch batch (every N iterations):
+        if (iteration - first_iter) % opt.batch_iterations == 0:
+             # Release old
+            if current_batch_cameras:
+                 for cam in current_batch_cameras:
+                     cam.release()
+            
+            # Fetch new
+            try:
+                current_batch_cameras = next(loader_iter)
+            except StopIteration:
+                loader_iter = iter(dataloader)
+                current_batch_cameras = next(loader_iter)
+            
+            for cam in current_batch_cameras:
+                cam.to_device("cuda")
+                
+            batch_viewpoint_stack = current_batch_cameras.copy()
+
+
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -119,13 +181,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Pick a random Camera
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_indices = list(range(len(viewpoint_stack)))
-        rand_idx = randint(0, len(viewpoint_indices) - 1)
-        viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        vind = viewpoint_indices.pop(rand_idx)
+        # Pick a random Camera from current batch
+        if not batch_viewpoint_stack:
+            batch_viewpoint_stack = current_batch_cameras.copy()
+        rand_idx = randint(0, len(batch_viewpoint_stack) - 1)
+        viewpoint_cam = batch_viewpoint_stack.pop(rand_idx)
+        # vind = viewpoint_indices.pop(rand_idx) # Unused
+
 
         # Render
         if (iteration - 1) == debug_from:
@@ -298,8 +360,12 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
+        train_cameras = scene.getTrainCameras()
+        if not train_cameras:
+             train_cameras = scene.getTrainDataset()
+
         validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+                              {'name': 'train', 'cameras' : [train_cameras[idx % len(train_cameras)] for idx in range(5, 30, 5)]})
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:

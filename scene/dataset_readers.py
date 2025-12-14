@@ -108,10 +108,9 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         image_path = os.path.join(images_folder, extr.name)
         image_name = extr.name
         depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
-        image = Image.open(image_path)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX,
-                              image=image, image_path=image_path, image_name=image_name,
+                              image=None, image_path=image_path, image_name=image_name,
                               width=width, height=height, is_test=image_name in test_cam_names_list, time_idx=time_idx) 
                     # WDD [2024-07-30] 原因: 将时间索引保存到CameraInfo中。
 
@@ -355,38 +354,37 @@ def read4DGSSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     except:
         pcd = None
 
-    # WDD [2024-08-01] Add random points in a cube
-    # Use PLY AABB
-    num_pts = 300_000
+    # # Use PLY AABB
+    # num_pts = 300_000
     
-    if pcd is not None:
-        print(f"Adding {num_pts} random points to initialization (AABB)...")
-        points = pcd.points
-        min_pt = np.min(points, axis=0)
-        max_pt = np.max(points, axis=0)
-        extent = max_pt - min_pt
-        center = (max_pt + min_pt) / 2
+    # if pcd is not None:
+    #     print(f"Adding {num_pts} random points to initialization (AABB)...")
+    #     points = pcd.points
+    #     min_pt = np.min(points, axis=0)
+    #     max_pt = np.max(points, axis=0)
+    #     extent = max_pt - min_pt
+    #     center = (max_pt + min_pt) / 2
         
-        # Add slight padding (e.g. 10%)
-        extent = extent * 1.1
+    #     # Add slight padding (e.g. 10%)
+    #     extent = extent * 1.1
         
-        xyz = (np.random.random((num_pts, 3)) - 0.5) * extent + center
-        rgb = np.random.random((num_pts, 3))
-        normals = np.zeros((num_pts, 3))
+    #     xyz = (np.random.random((num_pts, 3)) - 0.5) * extent + center
+    #     rgb = np.random.random((num_pts, 3))
+    #     normals = np.zeros((num_pts, 3))
 
-        new_xyz = np.concatenate([pcd.points, xyz], axis=0)
-        new_rgb = np.concatenate([pcd.colors, rgb], axis=0)
-        new_normals = np.concatenate([pcd.normals, normals], axis=0)
-        pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
-    else:
-        # Fallback if no PCD found
-        print(f"Adding {num_pts} random points to initialization (Fallback)...")
-        radius = nerf_normalization["radius"]
-        center = -nerf_normalization["translate"]
-        xyz = (np.random.random((num_pts, 3)) - 0.5) * 2 * radius + center
-        rgb = np.random.random((num_pts, 3))
-        normals = np.zeros((num_pts, 3))
-        pcd = BasicPointCloud(points=xyz, colors=rgb, normals=normals)
+    #     new_xyz = np.concatenate([pcd.points, xyz], axis=0)
+    #     new_rgb = np.concatenate([pcd.colors, rgb], axis=0)
+    #     new_normals = np.concatenate([pcd.normals, normals], axis=0)
+    #     pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
+    # else:
+    #     # Fallback if no PCD found
+    #     print(f"Adding {num_pts} random points to initialization (Fallback)...")
+    #     radius = nerf_normalization["radius"]
+    #     center = -nerf_normalization["translate"]
+    #     xyz = (np.random.random((num_pts, 3)) - 0.5) * 2 * radius + center
+    #     rgb = np.random.random((num_pts, 3))
+    #     normals = np.zeros((num_pts, 3))
+    #     pcd = BasicPointCloud(points=xyz, colors=rgb, normals=normals)
 
 
     scene_info = SceneInfo(point_cloud=pcd,

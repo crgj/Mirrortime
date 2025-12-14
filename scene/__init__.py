@@ -11,7 +11,9 @@
 
 import os
 import random
+import random
 import json
+from scene.dataset import FourDDataset
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
@@ -72,9 +74,20 @@ class Scene:
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
+        if resolution_scales and len(resolution_scales) > 0:
+            self.resolution_scale = resolution_scales[0]
+        else:
+             self.resolution_scale = 1.0
+        
+        # Keep track of info for lazy loading
+        self.train_cam_infos = scene_info.train_cameras
+        self.test_cam_infos = scene_info.test_cameras
+        self.scene_info = scene_info
+        self.args = args
+
         for resolution_scale in resolution_scales:
-            print("Loading Training Cameras")
-            self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
+            # print("Loading Training Cameras")
+            # self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
 
@@ -105,8 +118,18 @@ class Scene:
         with open(os.path.join(self.model_path, "exposure.json"), "w") as f:
             json.dump(exposure_dict, f, indent=2)
 
+    def getTrainDataset(self):
+        return FourDDataset(self.train_cam_infos, self.args, 
+                            {"resolution_scale": self.resolution_scale, 
+                             "is_nerf_synthetic": self.scene_info.is_nerf_synthetic,
+                             "is_test_dataset": False})
+
     def getTrainCameras(self, scale=1.0):
-        return self.train_cameras[scale]
+        # Fallback or specific logical handling
+        # For now return empty list or None as we use dataset
+        if scale in self.train_cameras:
+            return self.train_cameras[scale]
+        return []
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
