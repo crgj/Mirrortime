@@ -40,6 +40,17 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
+# ==============================================================================
+# [PUP 3D-GS Integration] Import Fisher computation module
+# ==============================================================================
+from fisher_pool_xyz_scaling import pool_fisher_cuda
+try:
+    from fisher_pool_xyz_scaling import pool_fisher_cuda
+    FISHER_AVAILABLE = True
+except ImportError:
+    FISHER_AVAILABLE = False
+    print("\n[WARNING] 'fisher_pool_xyz_scaling' not found. PUP Pruning will be skipped.\n")
+
 try:
     from fused_ssim import fused_ssim
     FUSED_SSIM_AVAILABLE = True
@@ -52,7 +63,7 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, args):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
@@ -94,6 +105,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    
+    # [PUP 3D-GS Integration] Initialize pruning counter
+    prune_idx = 0
     
     # WDD [2024-07-31] [For GUI Dynamic Playback]
     last_time_update = time.time()
@@ -171,6 +185,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
                     break
             except Exception as e:
+                print(f"GUI error: {e}")
                 network_gui.conn = None
 
         iter_start.record()
@@ -214,7 +229,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Depth regularization
         Ll1depth_pure = 0.0
-        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
+        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable and render_pkg["depth"] is not None:
             invDepth = render_pkg["depth"]
             mono_invdepth = viewpoint_cam.invdepthmap.cuda()
             depth_mask = viewpoint_cam.depth_mask.cuda()
@@ -282,7 +297,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+            # training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -306,11 +321,108 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             
             if iteration % 200 == 0:
                 # WDD [2024-07-31] Log Active Duration (histogram)
-                active_duration_tensor = gaussians.compute_active_duration(threshold=0.05)
+                active_duration_tensor = gaussians.compute_active_duration(threshold=0.001)
                 opacity_tensor = gaussians.get_opacity # Get current base opacity or combined if valid
                 web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], lifetime_tensor=active_duration_tensor, densification_stats=densification_stats, opacity_tensor=opacity_tensor)
             else:
                 web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
+
+
+            # ==================================================================
+            # [PUP 3D-GS Integration] Pruning Logic
+            # ==================================================================
+            if FISHER_AVAILABLE and args.prune_iterations and iteration in args.prune_iterations:
+                if prune_idx < len(args.prune_percent):
+                    current_prune_percent = args.prune_percent[prune_idx]
+                    print(f"\n[ITER {iteration}] Executing PUP Pruning Round {prune_idx+1}")
+                    print(f"Target Pruning Percentage: {current_prune_percent * 100}%")
+
+                    # 0. Preparation: clear gradients, ensure memory
+                    gaussians.optimizer.zero_grad(set_to_none=True)
+                    torch.cuda.empty_cache()
+
+                    # 1. Calculate Fisher Matrix
+                    N = gaussians.get_xyz.shape[0]
+                    device = gaussians.get_xyz.device
+                    
+                    # Initialize Fisher accumulator (N, 6, 6) -> Mean(3) + Scale(3)
+                    fishers = torch.zeros(N, 6, 6, device=device).float()
+
+                    # Must enable gradients for backward pass
+                    with torch.enable_grad():
+                        train_cameras = scene.getTrainCameras()
+                        # Flatten the batch_viewpoint_stack logic or iterate over all cameras?
+                        # Original PUP iterates over all training cameras.
+                        # scene.getTrainCameras() returns a list of all cameras if they are loaded.
+                        # However, Mirrortime seems to use a DataLoader approach (scene.getTrainDataset()).
+                        # We need to be careful here. scene.getTrainCameras() might return empty list if not loaded.
+                        
+                        # Check if scene.getTrainCameras() works as expected.
+                        cameras_to_use = scene.getTrainCameras()
+                        if not cameras_to_use:
+                             # Fallback to dataset if cameras are not stored in scene (due to DataLoader)
+                             if hasattr(scene, "getTrainDataset"):
+                                 cameras_to_use = scene.getTrainDataset()
+                             else:
+                                 cameras_to_use = []
+
+                        if len(cameras_to_use) == 0:
+                             print("Error: No training cameras available for Fisher computation.")
+                        else:
+                            for view_idx, view in tqdm(enumerate(cameras_to_use), 
+                                                    total=len(cameras_to_use), 
+                                                    desc="Calculating Fisher Matrix"):
+                                view.to_device("cuda")
+                                # Call CUDA kernel
+                                pool_fisher_cuda(
+                                    view_idx, view, gaussians, pipe, background,
+                                    fishers, args.fisher_resolution
+                                )
+                                view.to_device("cpu") # Move back to save memory
+                                torch.cuda.empty_cache()
+                    
+                    # 2. Compute Sensitivity Score
+                    print("Computing sensitivity scores...")
+                    fishers_sv = torch.linalg.svdvals(fishers)
+                    fishers_sv = torch.clamp(fishers_sv, min=1e-10) 
+                    fishers_log_dets = torch.log(fishers_sv).sum(dim=1)
+
+                    # 3. Determine Threshold and Generate Mask
+                    n_prune = int(N * current_prune_percent)
+                    if n_prune > 0:
+                        topk = torch.topk(fishers_log_dets, k=n_prune, largest=False)
+                        threshold = topk.values.max()
+                        
+                        # Mask: True = Prune (Low Score)
+                        # We want to remove points with LOW sensitivity.
+                        prune_mask = fishers_log_dets <= threshold
+                        
+                        # [User Request] Only prune points that are active for the entire duration (active_duration == frame_count)
+                        # This preserves dynamic points that might have low sensitivity but are crucial for specific frames.
+                        gaussians.total_frames = scene.frame_count
+                        active_durations = gaussians.get_lifetime()
+                        full_duration_mask = active_durations >= (scene.frame_count//2)
+                        # full_duration_mask = active_durations <1
+                        # Apply the duration filter
+                        # prune_mask=full_duration_mask
+                        prune_mask = torch.logical_and(prune_mask, full_duration_mask)
+                        
+                        n_final_prune = prune_mask.sum().item()
+                        print(f"Pruning {n_final_prune} Gaussians (Initial target: {n_prune}, filtered by duration: {n_prune - n_final_prune})...")
+                        gaussians.prune_points(prune_mask)
+                    
+                    # 5. Cleanup
+                    del fishers, fishers_sv, fishers_log_dets
+                    if 'topk' in locals(): del topk
+                    if 'prune_mask' in locals(): del prune_mask
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
+                    
+                    print(f"Pruning Complete. Remaining Gaussians: {gaussians.get_xyz.shape[0]}")
+                    prune_idx += 1
+                else:
+                    print(f"\n[WARNING] Iteration {iteration} is in prune_iterations but no matching percentage found.")
 
 
             # Optimizer step
@@ -406,11 +518,16 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[10_000,20_000,30_000,50_000,80_000,100_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    
+    # [PUP 3D-GS] Added arguments
+    parser.add_argument("--prune_iterations", nargs="+", type=int, default=[10_000,20_000,30_000,40_000], help="Iterations to trigger pruning")
+    parser.add_argument("--prune_percent", nargs="+", type=float, default=[0.9,0.7,0.5,0.5], help="Percentage of Gaussians to prune at each trigger")
+    parser.add_argument("--fisher_resolution", type=int, default=1, help="Resolution scaling for Fisher computation")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -423,7 +540,7 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args)
 
     # All done
     print("\nTraining complete.")

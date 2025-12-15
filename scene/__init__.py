@@ -106,10 +106,14 @@ class Scene:
         # WDD [2024-08-01] [修复4DGS保存ply的错误，并为每个时间帧分别保存]
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
 
+        ply_path = os.path.join(point_cloud_path, f"point_cloud.ply")
+        self.gaussians.save_ply_lifetime_visualization(ply_path)
+
         # 为每个时间帧保存一个ply文件
         for t in range(self.frame_count):
             ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
             self.gaussians.save_ply(ply_path, time_idx=t)
+        
         exposure_dict = {
             image_name: self.gaussians.get_exposure_from_name(image_name).detach().cpu().numpy().tolist()
             for image_name in self.gaussians.exposure_mapping

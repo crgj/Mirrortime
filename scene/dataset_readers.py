@@ -354,37 +354,37 @@ def read4DGSSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     except:
         pcd = None
 
-    # # Use PLY AABB
-    # num_pts = 300_000
+    # Use PLY AABB
+    num_pts = 3000_000
     
-    # if pcd is not None:
-    #     print(f"Adding {num_pts} random points to initialization (AABB)...")
-    #     points = pcd.points
-    #     min_pt = np.min(points, axis=0)
-    #     max_pt = np.max(points, axis=0)
-    #     extent = max_pt - min_pt
-    #     center = (max_pt + min_pt) / 2
+    if pcd is not None:
+        print(f"Adding {num_pts} random points to initialization (AABB)...")
+        points = pcd.points
+        min_pt = np.min(points, axis=0)
+        max_pt = np.max(points, axis=0)
+        extent = max_pt - min_pt
+        center = (max_pt + min_pt) / 2
         
-    #     # Add slight padding (e.g. 10%)
-    #     extent = extent * 1.1
+        # Add slight padding (e.g. 10%)
+        extent = extent * 0.8
         
-    #     xyz = (np.random.random((num_pts, 3)) - 0.5) * extent + center
-    #     rgb = np.random.random((num_pts, 3))
-    #     normals = np.zeros((num_pts, 3))
+        xyz = (np.random.random((num_pts, 3)) - 0.5) * extent + center
+        rgb = np.random.random((num_pts, 3))
+        normals = np.zeros((num_pts, 3))
 
-    #     new_xyz = np.concatenate([pcd.points, xyz], axis=0)
-    #     new_rgb = np.concatenate([pcd.colors, rgb], axis=0)
-    #     new_normals = np.concatenate([pcd.normals, normals], axis=0)
-    #     pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
-    # else:
-    #     # Fallback if no PCD found
-    #     print(f"Adding {num_pts} random points to initialization (Fallback)...")
-    #     radius = nerf_normalization["radius"]
-    #     center = -nerf_normalization["translate"]
-    #     xyz = (np.random.random((num_pts, 3)) - 0.5) * 2 * radius + center
-    #     rgb = np.random.random((num_pts, 3))
-    #     normals = np.zeros((num_pts, 3))
-    #     pcd = BasicPointCloud(points=xyz, colors=rgb, normals=normals)
+        new_xyz = np.concatenate([pcd.points, xyz], axis=0)
+        new_rgb = np.concatenate([pcd.colors, rgb], axis=0)
+        new_normals = np.concatenate([pcd.normals, normals], axis=0)
+        pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
+    else:
+        # Fallback if no PCD found
+        print(f"Adding {num_pts} random points to initialization (Fallback)...")
+        radius = nerf_normalization["radius"]
+        center = -nerf_normalization["translate"]
+        xyz = (np.random.random((num_pts, 3)) - 0.5) * 2 * radius + center
+        rgb = np.random.random((num_pts, 3))
+        normals = np.zeros((num_pts, 3))
+        pcd = BasicPointCloud(points=xyz, colors=rgb, normals=normals)
 
 
     scene_info = SceneInfo(point_cloud=pcd,

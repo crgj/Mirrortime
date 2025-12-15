@@ -69,6 +69,7 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self.tmp_radii = None
         self.setup_functions()
 
     def capture(self):
@@ -175,6 +176,13 @@ class GaussianModel:
         
         return left_sigmoid * right_sigmoid
     
+    def get_lifetime(self):
+        samples = range(self.total_frames)
+        active_count = torch.zeros((self.get_xyz.shape[0]), dtype=torch.float32, device="cuda")
+        for t_idx in samples:
+            active_count+=self.lifetime(t_idx).squeeze()
+        return active_count
+
     def compute_active_duration(self, threshold=0.01):
         total_frames = getattr(self, "total_frames", 100)
         active_count = torch.zeros((self.get_xyz.shape[0]), dtype=torch.float32, device="cuda")
@@ -354,6 +362,75 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
+    def save_ply_lifetime_visualization(self, path):
+        mkdir_p(os.path.dirname(path))
+
+        xyz = self._xyz.detach().cpu().numpy()
+        normals = np.zeros_like(xyz)
+        
+        # Get lifetime for coloring
+        lifetime = self.get_lifetime().detach() # [N]
+        total_frames = self.total_frames
+        
+        # Original colors (converted to RGB for modification, then back to SH?)
+        # Easier: Create RGB array, set colors, convert to SH.
+        # Initialize with a default color (e.g., Green or Gray) or keep original?
+        # Let's keep original colors for "in-between" points if possible, 
+        # BUT mixing SH domains might be tricky if we don't know the exact SH 0-coeff convention.
+        # Standard: SH_0 = (RGB - 0.5) / 0.28209479177387814
+        
+        # Let's create a wholly new color array for clear visualization
+        # Default: Gray
+        colors = torch.ones((xyz.shape[0], 3), device="cuda") * 0.5
+        
+        # Blue: > Total / 2
+        mask_blue = lifetime > (total_frames / 2)
+        colors[mask_blue] = torch.tensor([0.0, 0.0, 1.0], device="cuda")
+        
+        # Yellow: < 3
+        mask_yellow = lifetime < 3
+        colors[mask_yellow] = torch.tensor([1.0, 1.0, 0.0], device="cuda")
+        
+        # Convert to SH (DC only)
+        # Using utils.sh_utils.RGB2SH which is available in imports
+        f_dc = RGB2SH(colors) # [N, 3]
+        f_dc = f_dc.detach().cpu().numpy() # [N, 3] correct for concatenation
+        # Wait, f_dc in save_ply is: 
+        # self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        # Shape: [N, 1, 3] -> transpose(1,2) [N, 3, 1] -> flatten [N, 3]
+        # Actually in save_ply:
+        # f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1)...
+        # _features_dc is [N, 1, 3] usually? (N, features, channels)
+        # Let's check init: features[:,:,0:1].transpose(1, 2)
+        # If input features[N, 3, (deg+1)^2]
+        # features[:,:,0:1] is [N, 3, 1]
+        # transpose(1, 2) is [N, 1, 3]
+        # So _features_dc is [N, 1, 3].
+        
+        # So my f_dc from RGB2SH is [N, 3].
+        # I need to match save_ply output shape.
+        # save_ply does: transpose(1, 2).flatten(start_dim=1)
+        # [N, 1, 3] -> [N, 3, 1] -> [N, 3]. Correct.
+
+
+        # Rest SH is zero for flat colors
+        f_rest = np.zeros((xyz.shape[0], 3 * ((self.max_sh_degree + 1) ** 2 - 1)), dtype=np.float32)
+        
+        # Opacities
+        opacities = self._opacity.detach().cpu().numpy()
+        
+        scale = self._scaling.detach().cpu().numpy()
+        rotation = self._rotation.detach().cpu().numpy()
+
+        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
+
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        elements[:] = list(map(tuple, attributes))
+        el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
+        print(f"Saved active_duration visualization to {path}")
+
     def reset_opacity(self):
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
@@ -466,7 +543,8 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.tmp_radii = self.tmp_radii[valid_points_mask]
+        if self.tmp_radii is not None:
+             self.tmp_radii = self.tmp_radii[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}

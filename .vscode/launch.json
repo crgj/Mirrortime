@@ -12,11 +12,21 @@
             "console": "integratedTerminal",
             "args": [
                 "-r",
-                "8",
+                "2",
                 "-s",
-                "/home/momo/Desktop/1112/test_data/",
+                "/home/gs/gs/data/20251126145547/small/all/",
                 "-m",
-                "/home/momo/Desktop/1112/output1213"
+                "/home/gs/gs/data/20251126145547/output_s_1215",
+                "--densify_from_iter",
+                "5000",
+                "--opacity_reset_interval",
+                "6000",
+                "--densify_until_iter",
+                "50_000",
+                "--iterations",
+                "200_000",
+                "--lambda_dssim",
+                "0.3"
             ]
         }
     ]
