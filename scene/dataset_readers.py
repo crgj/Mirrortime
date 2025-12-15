@@ -355,7 +355,7 @@ def read4DGSSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         pcd = None
 
     # Use PLY AABB
-    num_pts = 3000_000
+    num_pts = 300_000
     
     if pcd is not None:
         print(f"Adding {num_pts} random points to initialization (AABB)...")
