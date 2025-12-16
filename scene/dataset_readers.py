@@ -35,7 +35,8 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     is_test: bool
-    time_idx: int # WDD [2024-07-30] 原因: 为动态场景添加时间索引。
+    is_test: bool
+    time_idx: int # [4DGS] Temporal index identifying which frame/timestamp this camera belongs to.
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -112,7 +113,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX,
                               image=None, image_path=image_path, image_name=image_name,
                               width=width, height=height, is_test=image_name in test_cam_names_list, time_idx=time_idx) 
-                    # WDD [2024-07-30] 原因: 将时间索引保存到CameraInfo中。
+                    # [4DGS] Assign the current time index to the camera. 
+                    # This allows the renderer to know "when" this view is observing the scene.
 
                     
         cam_infos.append(cam_info)
@@ -316,39 +318,75 @@ def read4DGSSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     train_cam_infos = []
     test_cam_infos = []
 
-    frame_dirs = sorted([d for d in os.listdir(path) if d.startswith('frame') and os.path.isdir(os.path.join(path, d))]) # WDD [2024-07-30] 原因: 获取所有帧目录并排序。
-    #
-
+    # [4DGS] 1. Discover Frame Directories
+    # The dataset is expected to be organized in folders 'frame000', 'frame001', etc.
+    # Each folder contains a standard Colmap sparse reconstruction for that time step.
+    frame_dirs = sorted([d for d in os.listdir(path) if d.startswith('frame') and os.path.isdir(os.path.join(path, d))]) 
     
-    for time_idx, frame_dir in enumerate(frame_dirs): # WDD [2024-07-30] 原因: 遍历帧目录以获取每个时间步的相机信息，并记录时间索引。
+    # [4DGS] 2. Shared Camera Parameters (Optional)
+    # Check if the parent directory contains shared camera intrinsics/extrinsics.
+    # If so, we load them ONCE and reuse them for all frames, avoiding redundant I/O.
+    # This is common in fixed-camera setups (e.g. static rig, dynamic scene).
+    shared_cam_extrinsics = None
+    shared_cam_intrinsics = None
+    try:
+        if os.path.exists(os.path.join(path, "sparse/0", "images.bin")):
+            shared_cam_extrinsics = read_extrinsics_binary(os.path.join(path, "sparse/0", "images.bin"))
+            shared_cam_intrinsics = read_intrinsics_binary(os.path.join(path, "sparse/0", "cameras.bin"))
+        elif os.path.exists(os.path.join(path, "sparse/0", "images.txt")):
+            shared_cam_extrinsics = read_extrinsics_text(os.path.join(path, "sparse/0", "images.txt"))
+            shared_cam_intrinsics = read_intrinsics_text(os.path.join(path, "sparse/0", "cameras.txt"))
+        
+        if shared_cam_extrinsics is not None:
+            print(f"[4DGS] Shared camera parameters found in {path}/sparse/0. Using them for all frames.")
+    except Exception as e:
+        print(f"[4DGS] No shared camera parameters found or error loading them: {e}. Will load per-frame.")
+
+    # [4DGS] 3. Iterate Through Time
+    for time_idx, frame_dir in enumerate(frame_dirs): 
         frame_path = os.path.join(path, frame_dir)
 
-        try:
-            cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.bin")
-            cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.bin")
-            cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
-            cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
-        except:
-            cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.txt")
-            cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.txt")
-            cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
-            cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+        cam_extrinsics = shared_cam_extrinsics
+        cam_intrinsics = shared_cam_intrinsics
+
+        # If shared params were NOT found, try loading from the frame folder
+        if cam_extrinsics is None:
+            try:
+                cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.bin")
+                cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.bin")
+                cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+                cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+            except:
+                cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.txt")
+                cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.txt")
+                cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+                cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
         
         reading_dir = "images" if images is None else images
+        # [4DGS] Load cameras for this specific time step (frame)
+        # We pass 'time_idx' so that all cameras in this folder are tagged with the correct timestamp.
         cam_infos_unsorted = readColmapCameras(
             cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=None,
             images_folder=os.path.join(frame_path, reading_dir),
-            depths_folder="", test_cam_names_list=[], time_idx=time_idx) # WDD [2024-07-30] 原因: 将当前的时间索引传递给相机读取函数。
+            depths_folder="", test_cam_names_list=[], time_idx=time_idx) # [4DGS] Pass time index
         
         train_cam_infos.extend(cam_infos_unsorted)
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    # WDD注释: 使用找到的第一个帧目录来加载初始点云，而不是硬编码 'frame000000'
-    if not frame_dirs:
-        raise FileNotFoundError(f"No frame directories (e.g., 'frame000000') found in {path}")
-    first_frame_dir = frame_dirs[0]
-    ply_path = os.path.join(path, first_frame_dir, "sparse/0/points3D.ply")
+    # [4DGS] 3. Initialize Point Cloud
+    # We use the sparse point cloud from the FIRST frame as the initialization for the 4D model.
+    # This provides a reasonable starting geometry.
+    # [User Request] Check root sparse dir first, then first frame.
+    ply_path = os.path.join(path, "sparse/0/points3D.ply")
+    if not os.path.exists(ply_path):
+        if not frame_dirs:
+            raise FileNotFoundError(f"No frame directories found in {path} and no root ply at {ply_path}")
+        first_frame_dir = frame_dirs[0]
+        ply_path = os.path.join(path, first_frame_dir, "sparse/0/points3D.ply")
+        print(f"[4DGS] Root PLY not found. Using first frame PLY: {ply_path}")
+    else:
+        print(f"[4DGS] Found root PLY: {ply_path}")
     try:
         pcd = fetchPly(ply_path)
     except:

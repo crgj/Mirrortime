@@ -94,7 +94,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     first_iter += 1
     
-    # DataLoader setup
+    # [Dataset Loading]
+    # Unlike standard 3DGS which often preloads all cameras or loads them one-by-one, 
+    # we use a PyTorch DataLoader to efficiently handle large 4D datasets (video sequences).
+    # This allows for parallel data loading and better memory management.
     torch.cuda.empty_cache()
     dataloader = DataLoader(scene.getTrainDataset(), batch_size=opt.batch_size, shuffle=True, num_workers=4, collate_fn=custom_collate_fn, persistent_workers=True, prefetch_factor=2)
     loader_iter = iter(dataloader)
@@ -146,6 +149,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Let's align with previous logic:
         # If we need to switch batch (every N iterations):
+        # [Dataset Loading]
+        # To amortize the cost of transferring data to the GPU, we reuse the same batch of cameras 
+        # for `opt.batch_iterations`. This is a deviation from standard 3DGS where the stochastic 
+        # selection usually happens from the entire pool every iteration.
         if (iteration - first_iter) % opt.batch_iterations == 0:
              # Release old
             if current_batch_cameras:
@@ -177,6 +184,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         last_time_update = time.time()
 
                         current_time_idx = (current_time_idx + 1) % frame_count
+                    
+                    # [Lifetime/4D]
+                    # Assign the current time index to the camera. This is crucial for 4D rendering
+                    # as it determines which Gaussians are active/visible based on their lifetime parameters.
                     custom_cam.time_idx = current_time_idx
                     
                     net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
@@ -320,7 +331,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             
             
             if iteration % 200 == 0:
-                # WDD [2024-07-31] Log Active Duration (histogram)
+                # [Lifetime Statistics]
+                # Log the distribution of 'active duration' (how long Gaussians remain visible).
+                # This metric is specific to 4DGS and helps analyze temporal consistency.
                 active_duration_tensor = gaussians.compute_active_duration(threshold=0.001)
                 opacity_tensor = gaussians.get_opacity # Get current base opacity or combined if valid
                 web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], lifetime_tensor=active_duration_tensor, densification_stats=densification_stats, opacity_tensor=opacity_tensor)
@@ -345,7 +358,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     N = gaussians.get_xyz.shape[0]
                     device = gaussians.get_xyz.device
                     
-                    # Initialize Fisher accumulator (N, 6, 6) -> Mean(3) + Scale(3)
+                    # [PUP Pruning]
+                    # Accumulate Fisher Information Matrix.
+                    # The Fisher Matrix serves as a proxy for "sensitivity" or importance of each Gaussian.
+                    # High Fisher info -> removing this point causes large change in loss -> Important.
+                    # Low Fisher info -> removing this point causes small change -> Prunable.
                     fishers = torch.zeros(N, 6, 6, device=device).float()
 
                     # Must enable gradients for backward pass
@@ -393,18 +410,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         topk = torch.topk(fishers_log_dets, k=n_prune, largest=False)
                         threshold = topk.values.max()
                         
-                        # Mask: True = Prune (Low Score)
-                        # We want to remove points with LOW sensitivity.
+                        # [PUP Pruning]
+                        # Create a base mask for points with LOW sensitivity (Fisher score <= threshold).
                         prune_mask = fishers_log_dets <= threshold
                         
-                        # [User Request] Only prune points that are active for the entire duration (active_duration == frame_count)
-                        # This preserves dynamic points that might have low sensitivity but are crucial for specific frames.
+                        # [Lifetime/PUP Safeguard]
+                        # We specifically want to PROTECT short-lived (dynamic) points from being pruned, 
+                        # even if they have low sensitivity globally. Dynamic points might only be important 
+                        # for a few frames, so their total Fisher info might be low, but they are critical 
+                        # for those specific frames.
+                        #
+                        # Therefore, we strictly prune ONLY points that:
+                        # 1. Have Low Sensitivity (prune_mask=True)
+                        # 2. AND are "Long Duration" / Static (full_duration_mask=True)
+                        #
+                        # Effectively: Dynamic points are NEVER pruned by this logic.
                         gaussians.total_frames = scene.frame_count
                         active_durations = gaussians.get_lifetime()
+                        # We define "Long Duration" as being active for at least half the video.
                         full_duration_mask = active_durations >= (scene.frame_count//2)
-                        # full_duration_mask = active_durations <1
-                        # Apply the duration filter
-                        # prune_mask=full_duration_mask
+                        
+                        # Apply the safeguard: Only prune if BOTH low sensitivity AND long duration.
                         prune_mask = torch.logical_and(prune_mask, full_duration_mask)
                         
                         n_final_prune = prune_mask.sum().item()

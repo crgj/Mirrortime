@@ -58,10 +58,12 @@ class GaussianModel:
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
 
-         # WDD [2024-08-07] [在构造函数中初始化与时间相关的参数，保持代码结构一致性]
-        self._lifetime_mu = torch.empty(0) # 时间中心
-        self._lifetime_w = torch.empty(0) # 时间宽度
-        self._lifetime_k = torch.empty(0) # 时间边缘锐度
+         # [Lifetime Attributes]
+        # Parameters governing the temporal existence of the Gaussian (4DGS).
+        # Modeled as a soft box function: Sigmoid(up) * Sigmoid(down).
+        self._lifetime_mu = torch.empty(0) # Center time (mu)
+        self._lifetime_w = torch.empty(0)  # Half-width (duration/2)
+        self._lifetime_k = torch.empty(0)  # Sharpness of temporal edges
 
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -150,28 +152,30 @@ class GaussianModel:
 
     def lifetime(self, t, mu=None, w=None, k=None):
         """
-        # WDD [2024-08-07] [使用两个Sigmoid函数实现的平滑盒函数（数值稳定版），返回在时间t的透明度乘数（0-1之间）]
+        [Lifetime Function]
+        Calculates the temporal visibility (0 to 1) at time 't'.
+        
+        Implements a "Double Sigmoid" (Soft Box) function:
+        - Rises at (mu - w)
+        - Falls at (mu + w)
+        - 'k' controls the steepness of the transition.
         """
         if mu is None:
-            # WDD [2024-08-07] [如果未提供参数，则使用模型自身的lifetime参数]
             mu = self._lifetime_mu
         if w is None:
             w = self._lifetime_w
         if k is None:
             k = self._lifetime_k
             
-        # Ensure w is positive
-        # WDD [2024-08-07] [确保w（半宽度）为正]
+        # Ensure positive width and sharpness
         w = torch.abs(w)
-        # Ensure k is positive for proper sigmoid behavior
-        # WDD [2024-08-07] [确保k（锐度）为正，以保证sigmoid函数的正常行为]
         k = torch.abs(k)
         
-        # WDD [2024-08-07] [使用torch.sigmoid以提高数值稳定性，表达式 1 / (1 + exp(-x)) 等价于 sigmoid(x)]
-        # WDD [2024-08-07] [第一个Sigmoid：在 (mu - w) 处创建上升沿]
+        # Sigmoid 1: Rise (0 -> 1) at start time
         left_sigmoid = torch.sigmoid(k * (t - (mu - w)))
         
-        # WDD [2024-08-07] [第二个Sigmoid：在 (mu + w) 处创建下降沿，等价于 sigmoid(-k * (t - (mu + w)))]
+        # Sigmoid 2: Fall (1 -> 0) at end time
+        # Equivalent to sigmoid(-k * (t - (mu + w)))
         right_sigmoid = torch.sigmoid(-k * (t - (mu + w)))
         
         return left_sigmoid * right_sigmoid
@@ -199,7 +203,9 @@ class GaussianModel:
 
     def get_opacity_at_time(self, t):
         """
-        # WDD [2024-08-07] [通过基础透明度和lifetime函数计算在时间t的最终透明度]
+        [Lifetime Query]
+        Returns the effective opacity at time 't'.
+        Formula: Base_Opacity * Lifetime_Factor(t)
         """
         base_opacity = self.get_opacity
         lifetime_value = self.lifetime(t)
@@ -236,16 +242,17 @@ class GaussianModel:
         # WDD [2024-08-07] [使用标准值初始化基础透明度]
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
         
-        # WDD [2024-08-07] [初始化lifetime参数]
-        # WDD [2024-08-07] [mu: 中心时间（在序列中间随机化）]
+        # [Lifetime Initialization]
+        # Initializing temporal parameters for the new Gaussians.
+        
+        # mu: Center of the video sequence + small noise to break symmetry
         lifetime_mu = torch.full((fused_point_cloud.shape[0], 1), Frame_count / 2.0, dtype=torch.float, device="cuda")
-        # WDD [2024-08-07] [添加一些噪声以打破对称性]
         lifetime_mu = lifetime_mu + torch.randn_like(lifetime_mu) * (Frame_count / 10.0)
         
-        # WDD [2024-08-07] [w: 半宽度（初始化以覆盖合理的时间跨度）]
+        # w: Approx 1/4 of the total duration (covering half the video)
         lifetime_w = torch.full((fused_point_cloud.shape[0], 1), Frame_count / 4.0, dtype=torch.float, device="cuda")
         
-        # WDD [2024-08-07] [k: 边缘锐度（初始化为中等值）]
+        # k: Medium sharpness for soft transitions initially
         lifetime_k = torch.full((fused_point_cloud.shape[0], 1), 5.0, dtype=torch.float, device="cuda")
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
@@ -480,8 +487,6 @@ class GaussianModel:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
         
-        
-
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
@@ -688,20 +693,7 @@ class GaussianModel:
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         
-        # # #添加xyz梯度过低的点的裁剪
-        # if self.denom.min() > 50:  # 确保累积了足够多次
-        #     grad_threshold = grads.mean() * 0.01  # 低于平均值1%的点
-        #     low_grad_mask = (grads.squeeze() < grad_threshold)
-            
-        #     # 安全检查：最多删除20%的点
-        #     max_prune = int(0.2 * prune_mask.shape[0])
-        #     if low_grad_mask.sum() > max_prune:
-        #         # 只删除梯度最低的那些
-        #         _, indices = grads.squeeze().topk(max_prune, largest=False)
-        #         low_grad_mask = torch.zeros_like(low_grad_mask)
-        #         low_grad_mask[indices] = True
-            
-        #     prune_mask = torch.logical_or(prune_mask, low_grad_mask)
+
         
         n_pruned = prune_mask.sum().item()
         self.prune_points(prune_mask)

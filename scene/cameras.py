@@ -21,7 +21,7 @@ import cv2
 
 class Camera(nn.Module):
     def __init__(self, resolution, colmap_id, R, T, FoVx, FoVy, image, 
-                 image_name, uid, time_idx, # WDD [2024-07-30] 原因: 增加time_idx参数以接收时间信息。
+                 image_name, uid, time_idx, # [4DGS] Temporal index for querying dynamic Gaussian states
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp = False, is_test_dataset = False, is_test_view = False,
                  invdepthmap=None,depth_params=None):
@@ -34,7 +34,7 @@ class Camera(nn.Module):
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
-        self.time_idx = time_idx # WDD [2024-07-30] 原因: 将时间索引保存为相机的一个属性。
+        self.time_idx = time_idx # [4DGS] Store time index to determine active Gaussians during rendering
 
         try:
             self.data_device = torch.device(data_device)
@@ -92,6 +92,9 @@ class Camera(nn.Module):
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
+    # [4DGS] Dynamic Memory Management
+    # These methods allow offloading unused cameras to CPU RAM to save VRAM, 
+    # which is critical when training on long video sequences with many frames.
     def to_device(self, device):
         self.original_image = self.original_image.to(device)
         self.world_view_transform = self.world_view_transform.to(device)
