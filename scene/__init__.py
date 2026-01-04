@@ -43,7 +43,7 @@ class Scene:
         self.test_cameras = {}
 
         # WDD注释: 尝试从4DGS数据集加载场景信息
-        if any(f.startswith("frame") and f[5:].isdigit() and os.path.isdir(os.path.join(args.source_path, f)) for f in os.listdir(args.source_path)): #WDD注释
+        if any(f.startswith("frame") and f[6:].isdigit() and os.path.isdir(os.path.join(args.source_path, f)) for f in os.listdir(args.source_path)): #WDD注释
             print("Found frame... folder, assuming 4DGS data set!") #WDD注释
             scene_info = sceneLoadTypeCallbacks["4DGS"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp) #WDD注释
         elif os.path.exists(os.path.join(args.source_path, "sparse")):
@@ -101,7 +101,7 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"), args.train_test_exp)
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent, self.frame_count)
+            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent, self.frame_count, init_opacity=0.005)
 
     def save(self, iteration):
         # [修复4DGS保存ply的错误，并为每个时间帧分别保存]

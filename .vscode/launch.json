@@ -14,9 +14,10 @@
                 "-r",
                 "8",
                 "-s",
-                "/home/momo/Desktop/test_data/frames/",
+                "/home/momo/data/laodan_new/",
                 "-m",
-                "/home/momo/Desktop/test_data/output_0104"
+                "/home/momo/data/laodan_output_0104",
+                "--random_background"
             ]
         }
     ]

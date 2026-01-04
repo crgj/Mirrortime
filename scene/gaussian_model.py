@@ -146,11 +146,14 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
+    #SUMO
+    def get_opacity_at_time(self, time_idx):
+        return self.opacity_activation(self._opacity[:, time_idx])
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float,Frame_count=2):
+    def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : list, spatial_lr_scale : float, Frame_count=2, init_opacity=0.1):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -165,8 +168,8 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        #WDD 这里增加了Frame_count参数
-        opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda"))
+        # 使用提供的初始不透明度
+        opacities = self.inverse_opacity_activation(init_opacity * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))

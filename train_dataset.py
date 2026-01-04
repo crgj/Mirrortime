@@ -58,7 +58,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
+    background2 = torch.tensor([1,1,1], dtype=torch.float32, device="cuda")
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
@@ -108,7 +108,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         current_time_idx = (current_time_idx + 1) % frame_count
                     custom_cam.time_idx = current_time_idx
                     
-                    net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
+                    net_image = render(custom_cam, gaussians, pipe, background2, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
@@ -155,18 +155,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
-        bg = torch.rand((3), device="cuda") if opt.random_background else background
-
+        bg = torch.tensor([[0, 0, 0], [1, 1, 1], [0.18, 0.18, 0.18]], dtype=torch.float32, device="cuda")[randint(0, 2)] if opt.random_background else background
+        # Loss
+        gt_image = viewpoint_cam.original_image.cuda()
         # render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, opt.mult)
+
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
-            image *= alpha_mask
+            # image *= alpha_mask
+            gt_image=gt_image*alpha_mask+(1-alpha_mask)*bg.view(3, 1, 1)
+            
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
+        
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
@@ -174,6 +177,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ssim_value = ssim(image, gt_image)
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -190,6 +194,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1depth = 0
 
         loss.backward()
+
 
 
         iter_end.record()
@@ -227,14 +232,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # 这是为了确保稠密化和剪枝操作在多个视角下是鲁棒且一致的
                     importance_score, pruning_score = compute_gaussian_score_fastgs(camlist, gaussians, pipe, background, opt, DENSIFY=True)
 
-                    # 对生命周期较短的点进行特殊保护
-                    lifetime_sum = gaussians.get_lifetime() # 计算每个高斯点在时间轴上的累计激活时长
-                    low_lifetime_mask = lifetime_sum < opt.low_lifetime_threshold # 识别活跃时间过短的点
+                    # # 对生命周期较短的点进行特殊保护
+                    # lifetime_sum = gaussians.get_lifetime() # 计算每个高斯点在时间轴上的累计激活时长
+                    # low_lifetime_mask = lifetime_sum < opt.low_lifetime_threshold # 识别活跃时间过短的点
                     
-                    # 保护逻辑：不剪枝活跃时间短的点，并强制对其进行稠密化处理
-                    pruning_score[low_lifetime_mask] = 0 # 保护：生命周期短的点不参与剪枝
-                    # 强制稠密化：调高重要性评分，使其超过阈值
-                    importance_score[low_lifetime_mask] = importance_score[low_lifetime_mask]*opt.importance_lambda+opt.importance_score_threshold-1 
+                    # # 保护逻辑：不剪枝活跃时间短的点，并强制对其进行稠密化处理
+                    # pruning_score[low_lifetime_mask] = 0 # 保护：生命周期短的点不参与剪枝
+                    # # 强制稠密化：调高重要性评分，使其超过阈值
+                    # importance_score[low_lifetime_mask] = importance_score[low_lifetime_mask]*opt.importance_lambda+opt.importance_score_threshold-1 
                     
                     # 执行 FastGS 特有的稠密化与剪枝操作
                     densification_stats=gaussians.densify_and_prune_fastgs(max_screen_size = size_threshold, 
@@ -261,14 +266,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             #     pruning_score[low_lifetime_mask] = 0 # Do not prune                 
             #     gaussians.final_prune_fastgs(min_opacity = 0.1, pruning_score = pruning_score)
             
-            # if iteration % 200 == 0:
-            #     # Log Active Duration (histogram)
-            #     active_duration_tensor = gaussians.get_lifetime()
-            #     opacity_tensor = gaussians.get_opacity # Get current base opacity or combined if valid
-            #     web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
-            #     # web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], lifetime_tensor=active_duration_tensor, densification_stats=densification_stats, opacity_tensor=opacity_tensor)
-            # else:
-            #     web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
+            if iteration % 200 == 0:
+                # Log Active Duration (histogram)
+                active_duration_tensor = gaussians.get_lifetime()
+                opacity_tensor = gaussians.get_opacity # Get current base opacity or combined if valid
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
+                # web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], lifetime_tensor=active_duration_tensor, densification_stats=densification_stats, opacity_tensor=opacity_tensor)
+            else:
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
 
 
             # Optimizer step

@@ -317,43 +317,130 @@ def read4DGSSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     train_cam_infos = []
     test_cam_infos = []
 
-    frame_dirs = sorted([d for d in os.listdir(path) if d.startswith('frame') and os.path.isdir(os.path.join(path, d))]) # WDD [2024-07-30] 原因: 获取所有帧目录并排序。
+    frame_dirs = sorted([d for d in os.listdir(path) if d.startswith('frame') and os.path.isdir(os.path.join(path, d))]) # 获取所有帧目录并排序。
     #
-
+    shared_path = os.path.join(path, "sparse/0")
+    shared_cam_extrinsics = None
+    shared_cam_intrinsics = None
+    # Check for binary or text colmap files
+    if os.path.exists(os.path.join(shared_path, "cameras.bin")):
+        extrinsic_file = os.path.join(shared_path, "images.bin")
+        intrinsic_file = os.path.join(shared_path, "cameras.bin")
+        shared_cam_extrinsics = read_extrinsics_binary(extrinsic_file)
+        shared_cam_intrinsics = read_intrinsics_binary(intrinsic_file)
+    elif os.path.exists(os.path.join(shared_path, "cameras.txt")):
+        extrinsic_file = os.path.join(shared_path, "images.txt")
+        intrinsic_file = os.path.join(shared_path, "cameras.txt")
+        shared_cam_extrinsics = read_extrinsics_text(extrinsic_file)
+        shared_cam_intrinsics = read_intrinsics_text(intrinsic_file)
     
-    for time_idx, frame_dir in enumerate(frame_dirs): # WDD [2024-07-30] 原因: 遍历帧目录以获取每个时间步的相机信息，并记录时间索引。
+    for time_idx, frame_dir in enumerate(frame_dirs): # 遍历帧目录以获取每个时间步的相机信息，并记录时间索引。
         frame_path = os.path.join(path, frame_dir)
+        
+        # Reset local frame variables to prevent stale data
+        cam_extrinsics = None
+        cam_intrinsics = None
 
-        try:
-            cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.bin")
-            cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.bin")
-            cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
-            cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
-        except:
-            cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.txt")
-            cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.txt")
-            cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
-            cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+        if shared_cam_extrinsics is not None and shared_cam_intrinsics is not None:
+            cam_extrinsics = shared_cam_extrinsics
+            cam_intrinsics = shared_cam_intrinsics
+        else:
+            try:
+                cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.bin")
+                cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.bin")
+                cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+                cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+            except:
+                try:
+                    cameras_extrinsic_file = os.path.join(frame_path, "sparse/0", "images.txt")
+                    cameras_intrinsic_file = os.path.join(frame_path, "sparse/0", "cameras.txt")
+                    cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+                    cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+                except:
+                    # Skip frame if no camera data is found
+                    continue
         
         reading_dir = "images" if images is None else images
         cam_infos_unsorted = readColmapCameras(
             cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=None,
             images_folder=os.path.join(frame_path, reading_dir),
-            depths_folder="", test_cam_names_list=[], time_idx=time_idx) # WDD [2024-07-30] 原因: 将当前的时间索引传递给相机读取函数。
+            depths_folder="", test_cam_names_list=[], time_idx=time_idx) # 将当前的时间索引传递给相机读取函数。
         
         train_cam_infos.extend(cam_infos_unsorted)
 
+    # Implement Eval Logic (Train/Test Split)
+    if eval:
+        if llffhold:
+            print("------------LLFF HOLD-------------")
+            cam_names = [c.image_name for c in train_cam_infos]
+            # Since we have time, we uniquely identify cameras by name (assuming same name across frames is same camera)
+            unique_cam_names = sorted(list(set(cam_names)))
+            test_cam_names_list = [name for idx, name in enumerate(unique_cam_names) if idx % llffhold == 0]
+        else:
+            test_txt = os.path.join(path, "sparse/0/test.txt")
+            if os.path.exists(test_txt):
+                with open(test_txt, 'r') as file:
+                    test_cam_names_list = [line.strip() for line in file]
+            else:
+                test_cam_names_list = []
+        
+        # Split but keep chronological order in the overall lists
+        all_cam_infos = train_cam_infos
+        train_cam_infos = [c for c in all_cam_infos if train_test_exp or c.image_name not in test_cam_names_list]
+        test_cam_infos = [c for c in all_cam_infos if c.image_name in test_cam_names_list]
+    
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    # WDD注释: 使用找到的第一个帧目录来加载初始点云，而不是硬编码 'frame000000'
-    if not frame_dirs:
-        raise FileNotFoundError(f"No frame directories (e.g., 'frame000000') found in {path}")
-    first_frame_dir = frame_dirs[0]
-    ply_path = os.path.join(path, first_frame_dir, "sparse/0/points3D.ply")
+    # Priority: Root sparse ply, then first frame's ply
+    root_ply = os.path.join(path, "sparse/0/points3D.ply")
+    if os.path.exists(root_ply):
+        ply_path = root_ply
+    else:
+        if not frame_dirs:
+            raise FileNotFoundError(f"No frame directories (e.g., 'frame000000') found in {path}")
+        first_frame_dir = frame_dirs[0]
+        ply_path = os.path.join(path, first_frame_dir, "sparse/0/points3D.ply")
     try:
         pcd = fetchPly(ply_path)
     except:
         pcd = None
+
+    #=======================================================================================================
+    # 添加一个初始化cube点云
+    # 将cube范围修改为所有相机位置构建的空间凸包 (这里使用AABB作为cube范围)
+    num_pts = 100_000
+    
+    # 提取相机中心
+    cam_centers = []
+    for cam in train_cam_infos:
+        W2C = getWorld2View2(cam.R, cam.T)
+        C2W = np.linalg.inv(W2C)
+        cam_centers.append(C2W[:3, 3:4])
+    cam_centers = np.hstack(cam_centers)
+    
+    min_pt = np.min(cam_centers, axis=1)
+    max_pt = np.max(cam_centers, axis=1)
+    extent = max_pt - min_pt
+    center = (max_pt + min_pt) / 2
+    
+    # 稍微扩大一点相机范围 (例如 20% 边距)
+    extent = extent * 1.2
+    
+    # 生成白色的随机高斯点
+    xyz = (np.random.random((num_pts, 3)) - 0.5) * extent + center
+    rgb = np.ones((num_pts, 3)) # 初始化高斯点的颜色设为白色
+    normals = np.zeros((num_pts, 3))
+
+    if pcd is not None:
+        print(f"Adding {num_pts} white random points inside camera AABB to initial point cloud...")
+        new_xyz = np.concatenate([pcd.points, xyz], axis=0)
+        new_rgb = np.concatenate([pcd.colors, rgb], axis=0)
+        new_normals = np.concatenate([pcd.normals, normals], axis=0)
+        pcd = BasicPointCloud(points=new_xyz, colors=new_rgb, normals=new_normals)
+    else:
+        print(f"Initializing with {num_pts} white random points inside camera AABB...")
+        pcd = BasicPointCloud(points=xyz, colors=rgb, normals=normals)
+    #=======================================================================================================
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
