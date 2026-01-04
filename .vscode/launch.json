@@ -8,15 +8,15 @@
             "name": "train",
             "type": "debugpy",
             "request": "launch",
-            "program": "train.py",
+            "program": "train_dataset.py",
             "console": "integratedTerminal",
             "args": [
                 "-r",
                 "8",
                 "-s",
-                "/home/gs/gs/data/20251126145547/5547/04/",
+                "/home/momo/Desktop/test_data/frames/",
                 "-m",
-                "/home/gs/gs/data/20251126145547/test1213"
+                "/home/momo/Desktop/test_data/output_0104"
             ]
         }
     ]

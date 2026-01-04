@@ -44,9 +44,9 @@ class Camera(nn.Module):
         gt_image = resized_image_rgb[:3, ...]
         self.alpha_mask = None
         if resized_image_rgb.shape[0] == 4:
-            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
+            self.alpha_mask = resized_image_rgb[3:4, ...]
         else: 
-            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
+            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...])
 
         if train_test_exp and is_test_view:
             if is_test_dataset:
@@ -54,7 +54,7 @@ class Camera(nn.Module):
             else:
                 self.alpha_mask[..., self.alpha_mask.shape[-1] // 2:] = 0
 
-        self.original_image = gt_image.clamp(0.0, 1.0).to(self.data_device)
+        self.original_image = gt_image.clamp(0.0, 1.0)
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]
 
@@ -76,7 +76,7 @@ class Camera(nn.Module):
 
             if self.invdepthmap.ndim != 2:
                 self.invdepthmap = self.invdepthmap[..., 0]
-            self.invdepthmap = torch.from_numpy(self.invdepthmap[None]).to(self.data_device)
+            self.invdepthmap = torch.from_numpy(self.invdepthmap[None])
 
         self.zfar = 100.0
         self.znear = 0.01
@@ -84,10 +84,35 @@ class Camera(nn.Module):
         self.trans = trans
         self.scale = scale
 
-        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
-        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
+        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1)
+        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1)
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
+        
+    def to_device(self, device):
+        self.original_image = self.original_image.to(device)
+        self.world_view_transform = self.world_view_transform.to(device)
+        self.projection_matrix = self.projection_matrix.to(device)
+        self.full_proj_transform = self.full_proj_transform.to(device)
+        self.camera_center = self.camera_center.to(device)
+        if self.alpha_mask is not None:
+            self.alpha_mask = self.alpha_mask.to(device)
+        if self.invdepthmap is not None:
+            self.invdepthmap = self.invdepthmap.to(device)
+            self.depth_mask = self.depth_mask.to(device)
+
+    def release(self):
+        self.original_image = self.original_image.to("cpu")
+        self.world_view_transform = self.world_view_transform.to("cpu")
+        self.projection_matrix = self.projection_matrix.to("cpu")
+        self.full_proj_transform = self.full_proj_transform.to("cpu")
+        self.camera_center = self.camera_center.to("cpu")
+        if self.alpha_mask is not None:
+            self.alpha_mask = self.alpha_mask.to("cpu")
+        if self.invdepthmap is not None:
+            self.invdepthmap = self.invdepthmap.to("cpu")
+            self.depth_mask = self.depth_mask.to("cpu")
+        torch.cuda.empty_cache()
         
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):

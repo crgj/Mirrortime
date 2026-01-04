@@ -97,6 +97,16 @@ class OptimizationParams(ParamGroup):
         self.depth_l1_weight_final = 0.01
         self.random_background = False
         self.optimizer_type = "default"
+        self.batch_size = 20
+        self.batch_iterations = 50
+        self.mult = 1.0
+        self.low_lifetime_threshold = 3.0
+        self.importance_lambda = 1.2
+        self.importance_score_threshold = 5.0
+        self.loss_thresh = 0.05
+        self.grad_thresh = 0.0002
+        self.grad_abs_thresh = 0.0002
+        self.dense = 0.01
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

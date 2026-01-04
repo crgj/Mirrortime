@@ -11,7 +11,9 @@
 
 import os
 import random
+import random
 import json
+from scene.dataset import FourDDataset
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
@@ -72,11 +74,26 @@ class Scene:
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
-        for resolution_scale in resolution_scales:
-            print("Loading Training Cameras")
-            self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
-            print("Loading Test Cameras")
-            self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
+        if resolution_scales and len(resolution_scales) > 0:
+            self.resolution_scale = resolution_scales[0]
+        else:
+             self.resolution_scale = 1.0
+        
+        # Keep track of info for lazy loading
+        self.train_cam_infos = scene_info.train_cameras
+        self.test_cam_infos = scene_info.test_cameras
+        self.scene_info = scene_info
+        self.args = args
+
+        # for resolution_scale in resolution_scales:
+            # print("Loading Training Cameras")
+            # self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
+            # print("Loading Test Cameras")
+            # self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
+
+        # 始终根据读取的小数据信息初始化帧数
+        self.frame_count = max(camera.time_idx for camera in scene_info.train_cameras) + 1
+        self.gaussians.total_frames = self.frame_count
 
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
@@ -84,19 +101,23 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"), args.train_test_exp)
         else:
-            #WDD [2024-07-30] 原因: 添加帧数参数以接收帧数信息。
-            frame_count=max_time_idx = max(camera.time_idx for camera in scene_info.train_cameras)+1
-            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent,frame_count)
+            self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent, self.frame_count)
 
     def save(self, iteration):
-        # WDD [2024-08-01] [修复4DGS保存ply的错误，并为每个时间帧分别保存]
+        # [修复4DGS保存ply的错误，并为每个时间帧分别保存]
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        # 获取总帧数
-        frame_count = self.gaussians._opacity.shape[1]
+
+        ply_path = os.path.join(point_cloud_path, f"point_cloud.ply")
+        self.gaussians.save_ply_lifetime_visualization(ply_path)
+
+        # 保存包含时间信息的 4D PLY (单一文件可见所有时刻)
+        ply_path_4d = os.path.join(point_cloud_path, f"point_cloud_4d.ply")
+        self.gaussians.save_ply_4d(ply_path_4d)
+
         # 为每个时间帧保存一个ply文件
-        for t in range(frame_count):
-            ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
-            self.gaussians.save_ply(ply_path, time_idx=t)
+        # for t in range(self.frame_count):
+        #     ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
+        #     self.gaussians.save_ply(ply_path, time_idx=t)
         exposure_dict = {
             image_name: self.gaussians.get_exposure_from_name(image_name).detach().cpu().numpy().tolist()
             for image_name in self.gaussians.exposure_mapping
@@ -105,8 +126,27 @@ class Scene:
         with open(os.path.join(self.model_path, "exposure.json"), "w") as f:
             json.dump(exposure_dict, f, indent=2)
 
+    def getTrainDataset(self):
+        return FourDDataset(self.train_cam_infos, self.args, 
+                            {"resolution_scale": self.resolution_scale, 
+                             "is_nerf_synthetic": self.scene_info.is_nerf_synthetic,
+                             "is_test_dataset": False})
+
+    def getTestDataset(self):
+        return FourDDataset(self.test_cam_infos, self.args, 
+                            {"resolution_scale": self.resolution_scale, 
+                             "is_nerf_synthetic": self.scene_info.is_nerf_synthetic,
+                             "is_test_dataset": True})
+
     def getTrainCameras(self, scale=1.0):
-        return self.train_cameras[scale]
+        # Fallback or specific logical handling
+        # For now return empty list or None as we use dataset
+        if scale in self.train_cameras:
+            return self.train_cameras[scale]
+        return []
 
     def getTestCameras(self, scale=1.0):
-        return self.test_cameras[scale]
+        # Fallback or specific logical handling
+        if scale in self.test_cameras:
+            return self.test_cameras[scale]
+        return []
