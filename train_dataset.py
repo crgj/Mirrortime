@@ -90,7 +90,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     current_time_idx = 0
     # Use total_frames because opacity is now [N, 1] + Network
     frame_count = scene.frame_count
-
+    iteration=first_iter
     for iteration in range(first_iter, opt.iterations + 1):
 
         #SIBR查看实时渲染
@@ -290,10 +290,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 else:
                     gaussians.optimizer.step()
                     gaussians.optimizer.zero_grad(set_to_none = True)
-
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+    torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+    print("\nTraining Step 1 complete. Starting Parametric Opacity Fitting...")
+    gaussians.fit_opacity_params()
+    print("\nSaving Step 2 initialized model...")
+    scene.save(opt.iterations)
+    
 
 def prepare_output_and_logger(args):    
     if not args.model_path:

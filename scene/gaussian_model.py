@@ -64,6 +64,11 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self.use_parametric_opacity = False
+        self._base_opacity = torch.empty(0)
+        self._lifetime_mu = torch.empty(0)
+        self._lifetime_w = torch.empty(0)
+        self.total_frames = 0
         self.setup_functions()
 
     def capture(self):
@@ -81,6 +86,11 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self.use_parametric_opacity,
+            self._base_opacity,
+            self._lifetime_mu,
+            self._lifetime_w,
+            self.total_frames,
         )
     
     def restore(self, model_args, training_args):
@@ -96,7 +106,12 @@ class GaussianModel:
         xyz_gradient_accum_abs,
         denom,
         opt_dict, 
-        self.spatial_lr_scale) = model_args
+        self.spatial_lr_scale,
+        self.use_parametric_opacity,
+        self._base_opacity,
+        self._lifetime_mu,
+        self._lifetime_w,
+        self.total_frames) = model_args
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.xyz_gradient_accum_abs = xyz_gradient_accum_abs
@@ -131,6 +146,11 @@ class GaussianModel:
     
     @property
     def get_opacity(self):
+        if self.use_parametric_opacity:
+            # Calculate all opacities if needed, but get_opacity usually returns (N, T)
+            # We can use linspace to get all T moments
+            t = torch.linspace(1, self.total_frames, self.total_frames, device=self._xyz.device)
+            return self.get_opacity_parametric(t)
         return self.opacity_activation(self._opacity)
     
     @property
@@ -148,7 +168,34 @@ class GaussianModel:
 
     #SUMO
     def get_opacity_at_time(self, time_idx):
-        return self.opacity_activation(self._opacity[:, time_idx])
+        if self.use_parametric_opacity:
+            # time_idx is 0-indexed, but t in formula is 1-indexed
+            t = float(time_idx + 1)
+            return self.get_opacity_parametric(t)
+        return self.opacity_activation(self._opacity[:, time_idx:time_idx+1])
+
+    def get_opacity_parametric(self, t):
+        """
+        Calculate opacity based on parametric model: alpha(t) = sigma(base_opacity) * lifetime(t)
+        t: float or tensor of shape (T,)
+        Returns query for all N Gaussians: (N, 1) or (N, T)
+        """
+        k = 10.0
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor([t], device=self._xyz.device, dtype=torch.float32)
+        
+        # t shape: (T,), mu/w shape: (N, 1)
+        t = t.view(1, -1) # (1, T)
+        mu = self._lifetime_mu # (N, 1)
+        w = self._lifetime_w # (N, 1)
+        
+        # lifetime(t) = sigma(k * (t - (mu - w))) * sigma(k * ((mu + w) - t))
+        l1 = torch.sigmoid(k * (t - (mu - w)))
+        l2 = torch.sigmoid(k * ((mu + w) - t))
+        lifetime = l1 * l2
+        
+        base_alpha = torch.sigmoid(self._base_opacity) # (N, 1)
+        return base_alpha * lifetime
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
@@ -197,6 +244,12 @@ class GaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
+
+        if hasattr(self, 'use_parametric_opacity') and self.use_parametric_opacity:
+            l.append({'params': [self._base_opacity], 'lr': training_args.opacity_lr, "name": "base_opacity"})
+            # Use specific LRs from optimization params
+            l.append({'params': [self._lifetime_mu], 'lr': training_args.lifetime_mu_lr, "name": "mu"})
+            l.append({'params': [self._lifetime_w], 'lr': training_args.lifetime_w_lr, "name": "w"})
 
         if self.optimizer_type == "default":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -259,7 +312,7 @@ class GaussianModel:
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         
         # In 4D mode, we save all opacity channels
-        opacities = self._opacity.detach().cpu().numpy()
+        # opacities = self._opacity.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
@@ -271,11 +324,17 @@ class GaussianModel:
             l.append('f_rest_{}'.format(i))
         
         # Opacity channels: if multiple, save as opacity_0, opacity_1, ...
-        if opacities.shape[1] > 1:
-            for i in range(opacities.shape[1]):
-                l.append('opacity_{}'.format(i))
-        else:
+        # if opacities.shape[1] > 1:
+        #     for i in range(opacities.shape[1]):
+        #         l.append('opacity_{}'.format(i))
+        # else:
+        #     l.append('opacity')
+
+        if self.use_parametric_opacity:
             l.append('opacity')
+            l.append('lifetime_mu')
+            l.append('lifetime_w')
+            l.append('lifetime_k')
 
         for i in range(scale.shape[1]):
             l.append('scale_{}'.format(i))
@@ -285,10 +344,22 @@ class GaussianModel:
         dtype_full = [(attribute, 'f4') for attribute in l]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        lifetime_k=np.ones_like(self._lifetime_w.detach().cpu().numpy())*10
+        attr_list = [xyz, normals, f_dc, f_rest]
+        if self.use_parametric_opacity:
+            attr_list.append(self._base_opacity.detach().cpu().numpy())
+            attr_list.append(self._lifetime_mu.detach().cpu().numpy())
+            attr_list.append(self._lifetime_w.detach().cpu().numpy())
+            attr_list.append(lifetime_k)
+        attr_list.extend([scale, rotation])
+        
+        attributes = np.concatenate(attr_list, axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
-        PlyData([el]).write(path)
+        total_frames = self._opacity.shape[1]
+        comments = [f"frames {total_frames}"]
+        
+        PlyData([el], comments=comments).write(path)
 
     def save_ply_lifetime_visualization(self, path):
         # Save PLY where 'opacity' attribute is the cumulative lifetime for visualization
@@ -392,6 +463,15 @@ class GaussianModel:
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
+        try:
+            self._base_opacity = nn.Parameter(torch.tensor(np.asarray(plydata.elements[0]["base_opacity"])[..., np.newaxis], dtype=torch.float, device="cuda").requires_grad_(True))
+            self._lifetime_mu = nn.Parameter(torch.tensor(np.asarray(plydata.elements[0]["mu"])[..., np.newaxis], dtype=torch.float, device="cuda").requires_grad_(True))
+            self._lifetime_w = nn.Parameter(torch.tensor(np.asarray(plydata.elements[0]["w"])[..., np.newaxis], dtype=torch.float, device="cuda").requires_grad_(True))
+            self.use_parametric_opacity = True
+            print("Parametric opacity attributes loaded from PLY.")
+        except:
+            self.use_parametric_opacity = False
+
         self.active_sh_degree = self.max_sh_degree
 
     def replace_tensor_to_optimizer(self, tensor, name):
@@ -435,6 +515,10 @@ class GaussianModel:
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
+        if self.use_parametric_opacity:
+            self._base_opacity = optimizable_tensors["base_opacity"]
+            self._lifetime_mu = optimizable_tensors["mu"]
+            self._lifetime_w = optimizable_tensors["w"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -481,6 +565,10 @@ class GaussianModel:
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
+        if self.use_parametric_opacity:
+            self._base_opacity = optimizable_tensors["base_opacity"]
+            self._lifetime_mu = optimizable_tensors["mu"]
+            self._lifetime_w = optimizable_tensors["w"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -689,6 +777,47 @@ class GaussianModel:
         black_mask = torch.max(rgb, dim=1).values < threshold
         n_pruned = black_mask.sum().item()
         if n_pruned > 0:
-            # print(f"\n[PRUNING] Pruned {n_pruned} black points.")
+            print(f"\n[PRUNING] Pruned {n_pruned} black points.")
             self.prune_points(black_mask)
         return n_pruned
+
+    def fit_opacity_params(self):
+        print(f"Fitting parametric opacity for {self._xyz.shape[0]} points using explicit calculation...")
+        device = self._xyz.device
+        T = self.total_frames
+        with torch.no_grad():
+            opacity_targets = self.opacity_activation(self._opacity) # (N, T)
+            
+            # Identify active frames where opacity > 0.5
+            active_mask = (opacity_targets > 0.5).float()
+            has_active = (active_mask.sum(dim=1, keepdim=True) > 0)
+            
+            # Framework for time indices
+            t_values = torch.linspace(1, T, T, device=device).view(1, -1) # (1, T)
+            
+            # Max/Min active time indices
+            masked_t = t_values * active_mask
+            t_max = masked_t.max(dim=1, keepdim=True).values
+            # For min, we replace 0s with a large value
+            t_min = torch.where(active_mask > 0, t_values, torch.tensor(float('inf'), device=device)).min(dim=1, keepdim=True).values
+            
+            # mu and w calculation
+            # If active, mu is mid-point, w is half-range + buffer
+            # If not active, mu is argmax, w is default 1.0
+            mu_init = torch.where(has_active, (t_min + t_max) / 2.0, (torch.argmax(opacity_targets, dim=1, keepdim=True).float() ))
+            w_init = torch.where(has_active, (t_max - t_min) / 2.0, torch.full_like(t_max, 0.2))
+            
+            # base_opacity calculation: mean of active opacities
+            active_sum = (opacity_targets * active_mask).sum(dim=1, keepdim=True)
+            active_count = active_mask.sum(dim=1, keepdim=True).clamp(min=1)
+            base_opacity_vals = active_sum / active_count
+            # Fallback to max for points with no > 0.5 frames
+            base_opacity_vals = torch.where(has_active, base_opacity_vals, opacity_targets.max(dim=1, keepdim=True).values)
+            
+            base_opacity_init = inverse_sigmoid(base_opacity_vals.clamp(0.001, 0.999))
+            
+        self._base_opacity = nn.Parameter(base_opacity_init.to(device).requires_grad_(True))
+        self._lifetime_mu = nn.Parameter(mu_init.to(device).requires_grad_(True))
+        self._lifetime_w = nn.Parameter(w_init.to(device).requires_grad_(True))
+        self.use_parametric_opacity = True
+        print("Parametric fitting (explicit calculation) completed.")

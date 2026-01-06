@@ -111,6 +111,8 @@ class OptimizationParams(ParamGroup):
         self.bg_threshold = 0.002     # Intensity threshold for background
         self.black_point_threshold = 0.01
         self.black_point_prune_interval = 300
+        self.lifetime_mu_lr = 0.001
+        self.lifetime_w_lr = 0.001
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

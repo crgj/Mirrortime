@@ -110,14 +110,15 @@ class Scene:
         ply_path = os.path.join(point_cloud_path, f"point_cloud.ply")
         self.gaussians.save_ply_lifetime_visualization(ply_path)
 
-        # 保存包含时间信息的 4D PLY (单一文件可见所有时刻)
-        ply_path_4d = os.path.join(point_cloud_path, f"point_cloud_4d.ply")
-        self.gaussians.save_ply_4d(ply_path_4d)
-
-        # 为每个时间帧保存一个ply文件
-        # for t in range(self.frame_count):
-        #     ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
-        #     self.gaussians.save_ply(ply_path, time_idx=t)
+        if self.gaussians.use_parametric_opacity:
+            # 保存包含时间信息的 4D PLY (单一文件可见所有时刻)
+            ply_path_4d = os.path.join(point_cloud_path, f"point_cloud_4d.ply")
+            self.gaussians.save_ply_4d(ply_path_4d)
+        else:
+            # 为每个时间帧保存一个ply文件
+            for t in range(self.frame_count):
+                ply_path = os.path.join(point_cloud_path, f"point_cloud_t{t}.ply")
+                self.gaussians.save_ply(ply_path, time_idx=t)
         exposure_dict = {
             image_name: self.gaussians.get_exposure_from_name(image_name).detach().cpu().numpy().tolist()
             for image_name in self.gaussians.exposure_mapping
