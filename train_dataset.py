@@ -256,6 +256,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+                
+                if iteration > opt.densify_from_iter and iteration % opt.black_point_prune_interval == 0:
+                    gaussians.prune_black_points(opt.black_point_threshold)
             
             # if iteration % opt.opacity_reset_interval == 0 and iteration > opt.densify_until_iter and iteration < opt.iterations:
             #     camlist = current_batch_cameras.copy()

@@ -17,7 +17,7 @@ import os
 import json
 from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
-from utils.sh_utils import RGB2SH
+from utils.sh_utils import RGB2SH, SH2RGB
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
@@ -443,7 +443,8 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.tmp_radii = self.tmp_radii[valid_points_mask]
+        if self.tmp_radii is not None:
+            self.tmp_radii = self.tmp_radii[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -679,3 +680,15 @@ class GaussianModel:
         scores_mask = pruning_score > 0.9
         final_prune = torch.logical_or(prune_mask, scores_mask)
         self.prune_points(final_prune)
+
+    def prune_black_points(self, threshold):
+        """Identify and remove Gaussians that have an RGB color very close to black."""
+        # Convert DC features to RGB
+        rgb = SH2RGB(self.get_features_dc.squeeze(1))
+        # Mask points where max(R, G, B) < threshold
+        black_mask = torch.max(rgb, dim=1).values < threshold
+        n_pruned = black_mask.sum().item()
+        if n_pruned > 0:
+            # print(f"\n[PRUNING] Pruned {n_pruned} black points.")
+            self.prune_points(black_mask)
+        return n_pruned
