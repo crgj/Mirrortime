@@ -107,8 +107,8 @@ class OptimizationParams(ParamGroup):
         self.grad_thresh = 0.0002
         self.grad_abs_thresh = 0.0002
         self.dense = 0.01
-        self.lambda_opacity_bg = 1.0 # Default 0 to avoid breaking existing runs
-        self.bg_threshold = 0.002     # Intensity threshold for background
+        self.lambda_opacity_bg = 0.3 # Default 0 to avoid breaking existing runs
+        self.bg_threshold = 0.0001     # Intensity threshold for background
         self.black_point_threshold = 0.01
         self.black_point_prune_interval = 300
         self.lifetime_mu_lr = 0.001

@@ -13,6 +13,8 @@ import numpy as np
 import torch
 from pathlib import Path
 
+import psutil
+
 # Global state
 app = FastAPI()
 
@@ -26,7 +28,9 @@ class WebLoggerState:
         
         # History data (sparsified)
         self.loss_history = []  # List of {x: iter, y: loss}
+        self.psnr_history = []  # List of {x: iter, y: psnr}
         self.point_count_history = [] # List of {x: iter, y: count}
+        self.memory_history = [] # List of {x: iter, system: %, gpu: MB}
         
         # Densification History
         self.clone_history = []
@@ -66,7 +70,9 @@ def get_status():
             "total_iterations": state.total_iterations,
             "elapsed_time": elapsed,
             "loss_history": state.loss_history,
+            "psnr_history": state.psnr_history,
             "point_count_history": state.point_count_history,
+            "memory_history": state.memory_history,
             "clone_history": state.clone_history,
             "split_history": state.split_history,
             "pruned_history": state.pruned_history,
@@ -148,7 +154,7 @@ def init_logger(config, total_iterations):
         state.total_iterations = total_iterations
         state.training_start_time = time.time()
 
-def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densification_stats=None):
+def log_metrics(iteration, loss, point_count, psnr=None, lifetime_tensor=None, densification_stats=None):
     with state.lock:
         state.current_iteration = iteration
         
@@ -163,6 +169,17 @@ def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densificatio
         if should_log:
             state.loss_history.append({"x": iteration, "y": float(loss)})
             state.point_count_history.append({"x": iteration, "y": int(point_count)})
+            if psnr is not None:
+                state.psnr_history.append({"x": iteration, "y": float(psnr)})
+                
+            # Memory Usage
+            mem = psutil.virtual_memory()
+            gpu_mem = torch.cuda.memory_allocated() / (1024 * 1024) # MB
+            state.memory_history.append({
+                "x": iteration,
+                "system": float(mem.percent),
+                "gpu": float(gpu_mem)
+            })
             
             if densification_stats:
                 state.clone_history.append({"x": iteration, "y": int(densification_stats.get("cloned", 0))})
@@ -175,10 +192,12 @@ def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densificatio
                  state.split_history.append({"x": iteration, "y": 0})
                  state.pruned_history.append({"x": iteration, "y": 0})
             
-            # Keep history size manageable (e.g. 5000 points max)
-            if len(state.loss_history) > 5000:
+            # Keep history size manageable (e.g. 50000 points max)
+            if len(state.loss_history) > 50000:
                 state.loss_history = state.loss_history[::2]
+                state.psnr_history = state.psnr_history[::2]
                 state.point_count_history = state.point_count_history[::2]
+                state.memory_history = state.memory_history[::2]
                 state.clone_history = state.clone_history[::2]
                 state.split_history = state.split_history[::2]
                 state.pruned_history = state.pruned_history[::2]
@@ -191,17 +210,19 @@ def log_metrics(iteration, loss, point_count, lifetime_tensor=None, densificatio
             # Tensor on GPU
             try:
                 # Sample a subset if too large
-                if lifetime_tensor.shape[0] > 100000:
-                    indices = torch.randint(0, lifetime_tensor.shape[0], (100000,), device=lifetime_tensor.device)
+                if lifetime_tensor.shape[0] > 10000000:
+                    indices = torch.randint(0, lifetime_tensor.shape[0], (10000000,), device=lifetime_tensor.device)
                     samples = lifetime_tensor[indices].detach().cpu().numpy().flatten()
                 else:
                     samples = lifetime_tensor.detach().cpu().numpy().flatten()
                 
-                durations = samples * 2.0 # Approximation
+                # durations = samples * 2.0 # Approximation <-- user said lifetime distribution, which for 4DGS usually means sum of opacity. 
+                # WDD: directly using samples as duration
+                durations = samples
                 
                 # Compute histogram
                 # Frame range might be large, clamp to reasonable max (e.g. 1000 frames) or auto
-                MAX_FRAME = state.max_frames
+                MAX_FRAME = 30
                 hist, bin_edges = np.histogram(durations, bins=30, range=(0, MAX_FRAME))
                 
                 # Format labels with decimals for precision

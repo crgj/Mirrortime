@@ -179,14 +179,17 @@ class GaussianModel:
         Returns query for all N Gaussians: (N, 1) or (N, T)
         """
         k = 10.0
-        if not isinstance(t, torch.Tensor):
-            t = torch.tensor([t], device=self._xyz.device, dtype=torch.float32)
-        
-        # t shape: (T,), mu/w shape: (N, 1)
+        device = self._xyz.device
+    
+        # 统一处理标量和张量输入
+        if isinstance(t, (int, float)):
+            t = torch.tensor([[t]], device=device, dtype=torch.float32)
+        elif not isinstance(t, torch.Tensor):
+            t = torch.tensor([t], device=device, dtype=torch.float32)
         t = t.view(1, -1) # (1, T)
         mu = self._lifetime_mu # (N, 1)
         w = self._lifetime_w # (N, 1)
-        
+    
         # lifetime(t) = sigma(k * (t - (mu - w))) * sigma(k * ((mu + w) - t))
         l1 = torch.sigmoid(k * (t - (mu - w)))
         l2 = torch.sigmoid(k * ((mu + w) - t))
@@ -217,8 +220,9 @@ class GaussianModel:
         # 使用提供的初始不透明度
         # Opacity initialized to (N, 1)
         opacities = self.inverse_opacity_activation(init_opacity * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
-        # Lifetime initialized to (N, T) with initial value 1.0
-        lifetime_init = 1.0 * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda")
+        # Lifetime initialized to (N, T) with initial effective value ~0.99
+        # inverse_sigmoid(0.99) approx 4.595
+        lifetime_init = 4.6 * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda")
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -303,8 +307,8 @@ class GaussianModel:
         return l
     
     def get_lifetime(self):
-        # Calculate sum of opacities across all frames as a measure of lifetime
-        return torch.sum(self.get_opacity, dim=-1)
+        # Calculate active duration: number of frames where lifetime > 0.5
+        return torch.sum((self.lifetime_activation(self.lifetime_bank) > 0.5).float(), dim=-1)
 
     def save_ply_4d(self, path):
         # Detailed 4D PLY save with all opacity frames
@@ -354,7 +358,7 @@ class GaussianModel:
         attributes = np.concatenate(attr_list, axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
-        total_frames = self._opacity.shape[1]
+        total_frames = self.total_frames
         comments = [f"frames {total_frames}"]
         
         PlyData([el], comments=comments).write(path)
@@ -380,7 +384,7 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
-    def save_ply(self, path, time_idx=None):
+    def save_ply(self, path, time_idx=0):
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -388,10 +392,7 @@ class GaussianModel:
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         
-        if time_idx is not None:
-            opacities=self.get_opacity_at_time(time_idx)
-        else:
-            opacities=self.get_opacity()
+        opacities=self.inverse_opacity_activation(self.get_opacity_at_time(time_idx).detach()).cpu().numpy()
 
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
@@ -437,10 +438,10 @@ class GaussianModel:
                 lifetime_bank[:, idx] = np.asarray(plydata.elements[0][attr_name])
         else:
             # Fallback for old models or if no lifetime bank
-            # Initialize with 1s (sigmoid(1) is ~0.73, still reasonably high but learnable)
+            # Initialize with value ~4.6 (sigmoid(4.6) is ~0.99)
             frame_count = 2 # Default fallback
-            lifetime_bank = 1.0 * np.ones((xyz.shape[0], frame_count))
-            print("Warning: No lifetime bank found in PLY. Initializing with default 1.0.")
+            lifetime_bank = 4.6 * np.ones((xyz.shape[0], frame_count))
+            print("Warning: No lifetime bank found in PLY. Initializing with default 4.6 (effective 0.99).")
 
         features_dc = np.zeros((xyz.shape[0], 3, 1))
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
@@ -528,10 +529,7 @@ class GaussianModel:
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
-        if self.use_parametric_opacity:
-
-            self._lifetime_mu = optimizable_tensors["mu"]
-            self._lifetime_w = optimizable_tensors["w"]
+        self.lifetime_bank = optimizable_tensors["lifetime_bank"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -580,10 +578,6 @@ class GaussianModel:
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self.lifetime_bank = optimizable_tensors["lifetime_bank"]
-        if self.use_parametric_opacity:
-
-            self._lifetime_mu = optimizable_tensors["mu"]
-            self._lifetime_w = optimizable_tensors["w"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -744,8 +738,18 @@ class GaussianModel:
         self.densify_and_clone_fastgs(metric_mask, all_clones)
         self.densify_and_split_fastgs(metric_mask, all_splits)
 
-        # prune_mask = (self.get_opacity < min_opacity).squeeze()
-        prune_mask = (self.get_opacity < min_opacity).all(dim=-1)
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+
+        # #计算每个点在所有帧中的最大透明度
+        # total_frames = self.total_frames
+        # samples = torch.linspace(0, total_frames - 1, total_frames, device="cuda").long()
+        # max_opacities = torch.zeros_like(self.get_opacity).squeeze()
+        # for t_idx in samples:
+        #     op_t = self.get_opacity_at_time(t_idx.item()).squeeze()
+        #     max_opacities = torch.max(max_opacities, op_t)
+        # #根据最大透明度进行pruning
+        # prune_mask = (max_opacities < min_opacity)
+
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
@@ -813,7 +817,7 @@ class GaussianModel:
             has_active = (active_mask.sum(dim=1, keepdim=True) > 0)
             
             # Framework for time indices
-            t_values = torch.linspace(1, T, T, device=device).view(1, -1) # (1, T)
+            t_values = torch.linspace(0, T-1, T, device=device).view(1, -1) # (1, T)
             
             # Max/Min active time indices
             masked_t = t_values * active_mask

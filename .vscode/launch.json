@@ -12,12 +12,12 @@
             "console": "integratedTerminal",
             "args": [
                 "-r",
-                "8",
+                "1000",
                 "-s",
-                "/home/momo/data/laodan_new/",
+                "/home/gs/gs/data/TaoRed/frame30",
                 "-m",
-                "/home/momo/data/laodan_output_0104",
-                "--random_background"
+                "/home/gs/gs/data/TaoRed/output_0107_r1000_01",
+                // "--random_background"
             ]
         }
     ]

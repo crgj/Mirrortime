@@ -4,470 +4,471 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FreetimeGS Monitor</title>
+    <title>Mirrortime Pro Monitor</title>
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600&display=swap"
         rel="stylesheet">
-    <!-- Bootstrap -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Apache ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 
     <style>
         :root {
-            --bg-color: #0b0c15;
-            --card-bg: #151621;
-            --accent-primary: #6366f1;
-            /* Indigo */
-            --accent-secondary: #ec4899;
-            /* Pink */
-            --text-primary: #e2e8f0;
-            --text-secondary: #94a3b8;
-            --border-color: #2d3748;
+            /* Palette: Dark Professional (WandB / Linear inspired) */
+            --bg-app: #0d0e12;
+            --bg-panel: #16181d;
+            --border-color: #2b2d35;
+            --text-main: #e2e2e2;
+            --text-muted: #8b8e98;
+
+            --accent-primary: #5e6ad2;
+            /* Indigo/Blur */
+            --accent-success: #22c55e;
+            --accent-warn: #eab308;
+            --accent-err: #ef4444;
+            --accent-info: #0ea5e9;
+
+            --font-ui: 'Inter', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
 
         body {
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            font-family: 'Inter', sans-serif;
-            -webkit-font-smoothing: antialiased;
-        }
-
-        /* Glass / Premium Card Style */
-        .card {
-            background: linear-gradient(145deg, rgba(21, 22, 33, 0.95), rgba(28, 30, 45, 0.95));
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(10px);
-            border-radius: 12px;
-            margin-bottom: 24px;
-        }
-
-        .card-header {
-            background: transparent;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            padding: 1rem 1.5rem;
-        }
-
-        .card-body {
-            padding: 1.5rem;
-        }
-
-        h2 {
-            font-weight: 300;
-            letter-spacing: -1px;
-            margin-bottom: 0;
-            background: linear-gradient(to right, #fff, #94a3b8);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .status-pill {
-            padding: 0.5rem 1rem;
-            border-radius: 50px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            background: rgba(34, 197, 94, 0.1);
-            color: #22c55e;
-            border: 1px solid rgba(34, 197, 94, 0.2);
-            transition: all 0.3s;
-        }
-
-        .status-pill.offline {
-            background: rgba(239, 68, 68, 0.1);
-            color: #ef4444;
-            border-color: rgba(239, 68, 68, 0.2);
-        }
-
-        .progress_container {
-            background: #1e293b;
-            border-radius: 8px;
-            padding: 2px;
-            /* Slightly tighter padding */
-            height: 16px;
-            /* Taller for visibility */
+            background-color: var(--bg-app);
+            color: var(--text-main);
+            font-family: var(--font-ui);
+            height: 100vh;
             overflow: hidden;
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+            /* Fix layout */
+            display: flex;
+            flex-direction: column;
         }
 
-        .progress-bar {
-            background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+        /* --- Header --- */
+        .app-header {
+            height: 48px;
+            background-color: var(--bg-panel);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+        }
+
+        .brand {
+            font-weight: 600;
+            font-size: 1rem;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .brand span {
+            color: var(--accent-primary);
+        }
+
+        .header-meta {
+            display: flex;
+            gap: 24px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--border-color);
+            display: inline-block;
+        }
+
+        .status-dot.online {
+            background: var(--accent-success);
+            box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+        }
+
+        /* --- Main Layout --- */
+        .dashboard-container {
+            flex: 1;
+            padding: 20px;
+            display: grid;
+            grid-template-rows: auto 1fr 1fr;
+            /* KPI / Main / Bottom */
+            gap: 20px;
+            overflow-y: auto;
+            /* Allow scroll if needed on small screens, though we aim for fit */
+            height: calc(100vh - 48px);
+        }
+
+        /* --- KPI Row --- */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 16px;
+        }
+
+        .kpi-card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
             border-radius: 6px;
-            transition: width 0.5s ease-out;
-            height: 100%;
-            /* FIX: Ensure bar fills the container */
-            box-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
-            /* Glow effect */
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            height: 100px;
         }
 
-        .stat-value {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #fff;
-        }
-
-        .stat-label {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-        }
-
-        .chart-container canvas {
-            /* Improve Chart rendering crispness */
-            image-rendering: pixelated;
-        }
-
-        pre {
-            background: #000 !important;
-            border: 1px solid #333;
-            color: #4ade80;
-            font-family: 'JetBrains Mono', monospace;
+        .kpi-label {
             font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .kpi-value {
+            font-family: var(--font-mono);
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .kpi-sub {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: auto;
+        }
+
+        /* --- Chart Panels --- */
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.85rem;
+            font-weight: 500;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .panel-body {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+            /* Important for flex/grid nesting */
+        }
+
+        .chart-instance {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* --- Grid Areas --- */
+        .main-chart-row {
+            min-height: 350px;
+        }
+
+        .bottom-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            min-height: 300px;
         }
     </style>
 </head>
 
 <body>
-    <div class="container-fluid p-4" style="max-width: 1600px;">
-        <!-- Header -->
-        <div class="d-flex justify-content-between align-items-center mb-5">
-            <div>
-                <h2>FreeTimeGS <span style="font-weight: 600; color:var(--accent-primary)">Pro</span></h2>
+
+    <header class="app-header">
+        <div class="brand">MIRROR<span>TIME</span></div>
+        <div class="header-meta">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span class="status-dot" id="online-ind"></span>
+                <span id="cnn-text">CONNECTING</span>
             </div>
-            <div id="status-badge" class="status-pill offline">Connecting...</div>
+            <div><span style="color:var(--text-muted);">UPTIME:</span> <span id="uptime-val"
+                    style="color:var(--text-main);">00:00:00</span></div>
+        </div>
+    </header>
+
+    <div class="dashboard-container">
+        <!-- KPI Row -->
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-label">Iteration</div>
+                <div class="kpi-value" id="kpi-iter">0</div>
+                <div class="kpi-sub" id="kpi-progress">Target: 30,000</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">L1 Loss</div>
+                <div class="kpi-value" id="kpi-loss" style="color: var(--accent-warn);">0.0000</div>
+                <div class="kpi-sub">Current Batch</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">PSNR</div>
+                <div class="kpi-value" id="kpi-psnr" style="color: var(--accent-success);">0.00</div>
+                <div class="kpi-sub">Reconstruction Quality</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Total Points</div>
+                <div class="kpi-value" id="kpi-points">0</div>
+                <div class="kpi-sub">Active Gaussians</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">System Load</div>
+                <div class="kpi-value" id="kpi-gpu">0<span style="font-size:1rem;color:var(--text-muted);">MB</span>
+                </div>
+                <div class="kpi-sub">RAM: <span id="kpi-ram">0%</span></div>
+            </div>
         </div>
 
-        <!-- Summary Stats Row -->
-        <div class="row mb-2">
-            <div class="col-md-3">
-                <div class="card p-3">
-                    <div class="stat-label">Iteration</div>
-                    <div id="iter-display" class="stat-value">0</div>
-                </div>
+        <!-- Main Chart: Dynamics -->
+        <div class="panel main-chart-row">
+            <div class="panel-header">
+                <span>Training Dynamics</span>
+                <span style="font-size:0.75rem; color:var(--text-muted);">Loss vs PSNR</span>
             </div>
-            <div class="col-md-3">
-                <div class="card p-3">
-                    <div class="stat-label">Total Iterations</div>
-                    <div id="total-iter-display" class="stat-value">0</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card p-3">
-                    <div class="stat-label">Elapsed Time</div>
-                    <div id="time-display" class="stat-value">0s</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card p-3">
-                    <div class="stat-label">Progress</div>
-                    <div class="d-flex align-items-center" style="height: 38px;">
-                        <div class="progress_container w-100">
-                            <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
-                        </div>
-                        <span id="progress-text" class="ms-2 small text-white">0%</span>
-                    </div>
-                </div>
+            <div class="panel-body">
+                <div id="chart-dynamics" class="chart-instance"></div>
             </div>
         </div>
 
-        <!-- Main Content -->
-        <div class="row">
-            <!-- Left Column: Primary Metrics -->
-            <div class="col-lg-8">
-                <!-- Loss -->
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between">
-                        <span>L1 Loss History</span>
-                        <span class="badge bg-dark">Log Scale Available</span>
-                    </div>
-                    <div class="card-body">
-                        <div style="height: 350px;">
-                            <canvas id="lossChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Points -->
-                <div class="card">
-                    <div class="card-header">Gaussian Count</div>
-                    <div class="card-body">
-                        <div style="height: 250px;">
-                            <canvas id="pointsChart"></canvas>
-                        </div>
-                    </div>
+        <!-- Bottom Grid -->
+        <div class="bottom-grid">
+            <!-- Model Stats -->
+            <div class="panel">
+                <div class="panel-header">Model Evolution</div>
+                <div class="panel-body">
+                    <div id="chart-model" class="chart-instance"></div>
                 </div>
             </div>
-
-            <!-- Right Column: Secondary Stats -->
-            <div class="col-lg-4">
-                <!-- Lifetime -->
-                <div class="card">
-                    <div class="card-header">Lifetime Distribution</div>
-                    <div class="card-body">
-                        <div style="height: 250px;">
-                            <canvas id="lifetimeChart"></canvas>
-                        </div>
-                        <div class="text-center mt-2 text-muted small">Duration (Frames)</div>
-                    </div>
+            <!-- Lifetime -->
+            <div class="panel">
+                <div class="panel-header">Lifetime Distribution</div>
+                <div class="panel-body">
+                    <div id="chart-life" class="chart-instance"></div>
                 </div>
-
-                <!-- Config -->
-                <div class="card">
-                    <div class="card-header">Configuration</div>
-                    <div class="card-body p-0">
-                        <pre id="config-display" style="height: 350px; overflow-y: auto; margin:0; border:none;"></pre>
-                    </div>
+            </div>
+            <!-- System/Resources -->
+            <div class="panel">
+                <div class="panel-header">System Health</div>
+                <div class="panel-body">
+                    <div id="chart-system" class="chart-instance"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        // --- Setup Charts with Correct Scales ---
-        Chart.defaults.color = '#64748b';
-        Chart.defaults.borderColor = 'rgba(255,255,255,0.05)';
-        Chart.defaults.font.family = "'Inter', sans-serif";
-
-        const commonOptions = {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: {
-                mode: 'nearest',
-                axis: 'x',
-                intersect: false
-            },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: 'rgba(0,0,0,0.9)',
-                    titleColor: '#fff',
-                    bodyColor: '#fff',
-                    borderColor: '#333',
-                    borderWidth: 1,
-                    padding: 10,
-                    displayColors: false,
-                    callbacks: {
-                        label: function (context) {
-                            let label = context.dataset.label || '';
-                            if (label) {
-                                label += ': ';
-                            }
-                            if (context.parsed.y !== null) {
-                                label += context.parsed.y.toFixed(5);
-                            }
-                            return label;
-                        }
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    type: 'linear', // Key fix for correct history drawing
-                    grid: { display: false },
-                    ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }
-                },
-                y: {
-                    grid: { borderDash: [5, 5] },
-                    beginAtZero: false
-                }
-            }
+        // --- Setup ECharts Theme ---
+        const themeColor = {
+            bg: 'transparent',
+            text: '#8b8e98',
+            grid: '#2b2d35',
+            tooltipBg: '#1b1d22',
+            tooltipBorder: '#2b2d35'
         };
 
-        // Loss Chart
-        const lossChart = new Chart(document.getElementById('lossChart'), {
-            type: 'line',
-            data: {
-                datasets: [{
-                    label: 'Loss',
-                    data: [],
-                    borderColor: '#6366f1', // Indigo
-                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 6,
-                    fill: true,
-                    parsing: false // IMPORTANT: Assume data is strictly {x, y}
-                }]
+        // --- Init Charts ---
+        const chartDyn = echarts.init(document.getElementById('chart-dynamics'));
+        const chartModel = echarts.init(document.getElementById('chart-model'));
+        const chartLife = echarts.init(document.getElementById('chart-life'));
+        const chartSys = echarts.init(document.getElementById('chart-system'));
+
+        // Common Config
+        const commonGrid = { left: 50, right: 50, top: 30, bottom: 30, containLabel: true };
+        const commonTooltip = {
+            trigger: 'axis',
+            backgroundColor: themeColor.tooltipBg,
+            borderColor: themeColor.tooltipBorder,
+            textStyle: { color: '#e2e2e2' },
+            axisPointer: { type: 'cross', label: { backgroundColor: '#5e6ad2' } }
+        };
+
+        // 1. Dynamics Chart Setup
+        chartDyn.setOption({
+            backgroundColor: themeColor.bg,
+            tooltip: commonTooltip,
+            legend: { top: 5, textStyle: { color: themeColor.text } },
+            grid: { ...commonGrid, bottom: 60 },
+            dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 10, height: 20, borderColor: 'transparent', backgroundColor: '#16181d' }],
+            xAxis: {
+                type: 'value',
+                axisLine: { lineStyle: { color: themeColor.grid } },
+                axisLabel: { color: themeColor.text },
+                splitLine: { show: false }
             },
-            options: commonOptions
+            yAxis: [
+                { type: 'value', name: 'Loss', position: 'left', splitLine: { lineStyle: { color: themeColor.grid, type: 'dashed' } }, axisLabel: { color: themeColor.text } },
+                { type: 'value', name: 'PSNR', position: 'right', splitLine: { show: false }, axisLabel: { color: themeColor.text } }
+            ],
+            series: [
+                { name: 'L1 Loss', type: 'line', showSymbol: false, smooth: true, lineStyle: { width: 2, color: '#eab308' }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(234,179,8,0.2)' }, { offset: 1, color: 'rgba(234,179,8,0)' }]) }, data: [] },
+                { name: 'PSNR', type: 'line', yAxisIndex: 1, showSymbol: false, smooth: true, lineStyle: { width: 2, color: '#22c55e' }, data: [] }
+            ]
         });
 
-        // Points Chart
-        const pointsChart = new Chart(document.getElementById('pointsChart'), {
-            type: 'line',
-            data: {
-                datasets: [
-                    {
-                        label: 'Total Points',
-                        data: [],
-                        borderColor: '#ec4899', // Pink
-                        backgroundColor: 'rgba(236, 72, 153, 0.1)',
-                        borderWidth: 2,
-                        pointRadius: 0,
-                        pointHoverRadius: 6,
-                        fill: true,
-                        parsing: false,
-                        yAxisID: 'y'
-                    },
-                    {
-                        label: 'Cloned',
-                        data: [],
-                        borderColor: '#3b82f6', // Blue
-                        backgroundColor: 'transparent',
-                        borderWidth: 1,
-                        pointRadius: 0,
-                        borderDash: [5, 5],
-                        parsing: false,
-                        yAxisID: 'y1'
-                    },
-                    {
-                        label: 'Split',
-                        data: [],
-                        borderColor: '#f59e0b', // Amber
-                        backgroundColor: 'transparent',
-                        borderWidth: 1,
-                        pointRadius: 0,
-                        borderDash: [5, 5],
-                        parsing: false,
-                        yAxisID: 'y1'
-                    },
-                    {
-                        label: 'Pruned',
-                        data: [],
-                        borderColor: '#ef4444', // Red
-                        backgroundColor: 'transparent',
-                        borderWidth: 1,
-                        pointRadius: 0,
-                        borderDash: [2, 2],
-                        parsing: false,
-                        yAxisID: 'y1'
-                    }
-                ]
-            },
-            options: {
-                ...commonOptions,
-                scales: {
-                    ...commonOptions.scales,
-                    y: {
-                        ...commonOptions.scales.y,
-                        type: 'linear',
-                        display: true,
-                        position: 'left',
-                        title: { display: true, text: 'Total POints' },
-                    },
-                    y1: {
-                        type: 'linear', /* Linear is often better for counts unless huge range */
-                        display: true,
-                        position: 'right',
-                        grid: { drawOnChartArea: false }, // only want the grid lines for one axis
-                        title: { display: true, text: 'Densification Events' },
-                        suggestedMax: 1000
-                    }
-                }
-            }
+        // 2. Model Stats Setup (Points + Densification)
+        chartModel.setOption({
+            tooltip: commonTooltip,
+            legend: { bottom: 0, textStyle: { fontSize: 10, color: themeColor.text } },
+            grid: { left: 10, right: 10, top: 10, bottom: 30, containLabel: true },
+            xAxis: { type: 'value', show: false }, // Sync with time conceptually but cleaner
+            yAxis: [
+                { type: 'value', name: 'Points', splitLine: { show: false } },
+                { type: 'value', name: 'Events', position: 'right', splitLine: { show: false } } // For densification
+            ],
+            series: [
+                { name: 'Points', type: 'line', showSymbol: false, lineStyle: { width: 2, color: '#a855f7' }, data: [] },
+                { name: 'Cloned', type: 'bar', yAxisIndex: 1, itemStyle: { color: '#3b82f6' }, data: [] },
+                { name: 'Pruned', type: 'bar', yAxisIndex: 1, itemStyle: { color: '#ef4444' }, data: [] }
+            ]
         });
 
-        // Lifetime Chart
-        const lifetimeChart = new Chart(document.getElementById('lifetimeChart'), {
-            type: 'bar',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Count',
-                    data: [],
-                    backgroundColor: '#10b981', // Emerald
-                    borderRadius: 4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: {
-                    x: {
-                        grid: { display: false },
-                        ticks: { autoSkip: true, maxTicksLimit: 10 }
-                    },
-                    y: {
-                        grid: { display: false },
-                        beginAtZero: true
-                    }
-                }
-            }
+        // 3. Lifetime Setup
+        chartLife.setOption({
+            tooltip: { trigger: 'axis', backgroundColor: themeColor.tooltipBg },
+            grid: { left: 10, right: 10, top: 10, bottom: 20, containLabel: true },
+            xAxis: { type: 'category', axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: themeColor.text } },
+            yAxis: { type: 'value', splitLine: { show: false }, axisLabel: { show: false } },
+            series: [{ type: 'bar', itemStyle: { color: '#22c55e', borderRadius: [2, 2, 0, 0] }, data: [] }]
         });
 
-        // --- Data Fetching ---
-        function updateDashboard() {
+        // 4. System Setup
+        chartSys.setOption({
+            tooltip: commonTooltip,
+            legend: { top: 0, textStyle: { fontSize: 10, color: themeColor.text } },
+            grid: { left: 10, right: 10, top: 25, bottom: 10, containLabel: true },
+            xAxis: { type: 'category', show: false },
+            yAxis: { type: 'value', min: 0, max: 100, splitLine: { show: false } }, // Normalize views
+            series: [
+                { name: 'RAM %', type: 'line', showSymbol: false, lineStyle: { width: 1.5, color: '#64748b' }, areaStyle: { color: 'rgba(100,116,139,0.1)' }, data: [] },
+                { name: 'GPU % (Est)', type: 'line', showSymbol: false, lineStyle: { width: 1.5, color: '#0ea5e9' }, data: [] }
+            ]
+        });
+
+        // --- Resize ---
+        window.addEventListener('resize', () => {
+            [chartDyn, chartModel, chartLife, chartSys].forEach(c => c.resize());
+        });
+
+        // --- Sync ---
+        echarts.connect([chartDyn, chartModel, chartSys]);
+
+
+        // --- Logic ---
+        function updateUI() {
             fetch('/api/status')
-                .then(response => response.json())
+                .then(r => r.json())
                 .then(data => {
-                    const badge = document.getElementById('status-badge');
-                    badge.innerText = "ONLINE";
-                    badge.className = "status-pill";
+                    // Header Status
+                    document.getElementById('online-ind').classList.add('online');
+                    document.getElementById('cnn-text').innerText = "ONLINE";
+                    document.getElementById('cnn-text').style.color = "var(--accent-success)";
 
-                    // Update Stats
-                    document.getElementById('iter-display').innerText = data.current_iteration.toLocaleString();
-                    document.getElementById('total-iter-display').innerText = data.total_iterations.toLocaleString();
+                    // Time
+                    const sec = Math.floor(data.elapsed_time);
+                    const h = Math.floor(sec / 3600).toString().padStart(2, '0');
+                    const m = Math.floor((sec % 3600) / 60).toString().padStart(2, '0');
+                    const s = (sec % 60).toString().padStart(2, '0');
+                    document.getElementById('uptime-val').innerText = `${h}:${m}:${s}`;
 
-                    const seconds = Math.floor(data.elapsed_time);
-                    const h = Math.floor(seconds / 3600);
-                    const m = Math.floor((seconds % 3600) / 60);
-                    const s = seconds % 60;
-                    document.getElementById('time-display').innerText = `${h}h ${m}m ${s}s`;
+                    // KPIs
+                    document.getElementById('kpi-iter').innerText = data.current_iteration.toLocaleString();
+                    const total = data.total_iterations || 30000;
+                    document.getElementById('kpi-progress').innerText = `Target: ${total.toLocaleString()} (${(data.current_iteration / total * 100).toFixed(1)}%)`;
 
-                    const percent = Math.min(100, (data.current_iteration / Math.max(1, data.total_iterations)) * 100);
-                    document.getElementById('progress-bar').style.width = percent + '%';
-                    document.getElementById('progress-text').innerText = percent.toFixed(1) + '%';
-
-                    document.getElementById('config-display').textContent = JSON.stringify(data.config, null, 2);
-
-                    // Update Charts
-                    // Using 'none' mode for performance update without animation
-                    lossChart.data.datasets[0].data = data.loss_history;
-                    lossChart.update('none');
-
-                    pointsChart.data.datasets[0].data = data.point_count_history;
-                    // Add Densification Stats
-                    if (data.clone_history) pointsChart.data.datasets[1].data = data.clone_history;
-                    if (data.split_history) pointsChart.data.datasets[2].data = data.split_history;
-                    if (data.pruned_history) pointsChart.data.datasets[3].data = data.pruned_history;
-
-                    pointsChart.update('none');
-
-                    // Update Lifetime if changed
-                    if (data.lifetime_hist_labels && data.lifetime_hist_labels.length > 0) {
-                        const newLabels = data.lifetime_hist_labels;
-                        const newCounts = data.lifetime_hist_counts;
-
-                        // Simple check to avoid re-render if identical
-                        // (Use a simple hash or length check in real apps, here we just update)
-                        if (lifetimeChart.data.labels[0] !== newLabels[0] || lifetimeChart.data.datasets[0].data[0] !== newCounts[0]) {
-                            lifetimeChart.data.labels = newLabels;
-                            lifetimeChart.data.datasets[0].data = newCounts;
-                            lifetimeChart.update();
-                        }
+                    if (data.loss_history.length) {
+                        const last = data.loss_history[data.loss_history.length - 1];
+                        document.getElementById('kpi-loss').innerText = last.y.toFixed(5);
                     }
+                    if (data.psnr_history.length) {
+                        const last = data.psnr_history[data.psnr_history.length - 1];
+                        document.getElementById('kpi-psnr').innerText = last.y.toFixed(2);
+                    }
+                    if (data.point_count_history.length) {
+                        const last = data.point_count_history[data.point_count_history.length - 1];
+                        document.getElementById('kpi-points').innerText = last.y.toLocaleString();
+                    }
+                    if (data.memory_history.length) {
+                        const last = data.memory_history[data.memory_history.length - 1];
+                        document.getElementById('kpi-ram').innerText = last.system.toFixed(1) + "%";
+                        document.getElementById('kpi-gpu').innerHTML = Math.round(last.gpu) + `<span style="font-size:1rem;color:var(--text-muted);">MB</span>`;
+                    }
+
+                    // --- Charts Data ---
+                    const toArr = d => d.map(p => [p.x, p.y]);
+
+                    // Dynamics
+                    chartDyn.setOption({
+                        series: [
+                            { data: toArr(data.loss_history) },
+                            { data: toArr(data.psnr_history) }
+                        ]
+                    });
+
+                    // Model Stats (Points + Dens)
+                    // We need to align X axis for dens bars if they are sparse. But here we just assume they align with Iter steps if recorded
+                    chartModel.setOption({
+                        series: [
+                            { data: toArr(data.point_count_history) },
+                            { data: toArr(data.clone_history) },
+                            { data: toArr(data.pruned_history) }
+                        ]
+                    });
+
+                    // Lifetime
+                    if (data.lifetime_hist_labels) {
+                        chartLife.setOption({
+                            xAxis: { data: data.lifetime_hist_labels },
+                            series: [{ data: data.lifetime_hist_counts }]
+                        });
+                    }
+
+                    // System
+                    if (data.memory_history.length) {
+                        // Show last 100 points
+                        const rec = data.memory_history.slice(-100);
+                        // Flatten for index 0..N
+                        const ram = rec.map((d, i) => [i, d.system]);
+                        // Mock GPU % scale: assume 24GB max just for viz (or just show normalized trend)
+                        // Or just show trend relative to 100% scale? We'll just divide MB by 240 (~24GB)
+                        const gpu = rec.map((d, i) => [i, d.gpu / 240]);
+
+                        chartSys.setOption({
+                            series: [
+                                { data: ram },
+                                { data: gpu }
+                            ]
+                        });
+                    }
+
                 })
-                .catch(err => {
-                    // console.error(err);
-                    const badge = document.getElementById('status-badge');
-                    badge.innerText = "OFFLINE";
-                    badge.className = "status-pill offline";
+                .catch(e => {
+                    document.getElementById('online-ind').classList.remove('online');
+                    document.getElementById('cnn-text').innerText = "OFFLINE";
+                    document.getElementById('cnn-text').style.color = "var(--text-muted)";
                 });
         }
 
-        setInterval(updateDashboard, 2000);
+        setInterval(updateUI, 1000);
+
     </script>
 </body>
 

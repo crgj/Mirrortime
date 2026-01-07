@@ -161,15 +161,28 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, opt.mult)
 
+        gt_image = viewpoint_cam.original_image.cuda()
+        # Render
+        if opt.lambda_opacity_bg > 0:
+            bg_mask = (gt_image.max(dim=0).values < opt.bg_threshold).int()
+            render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, opt.mult, get_flag=True, metric_map=bg_mask.flatten())
+            accum_bg_counts = render_pkg["accum_metric_counts"]
+            #TODO 每隔500帧保存一个bg_mask
+            if iteration % 500 == 0:
+                bg_mask_np = (bg_mask.cpu().numpy() * 255).astype('uint8')
+                cv2.imwrite(os.path.join(dataset.model_path, "bg_mask_{:05d}.png".format(iteration)), bg_mask_np)
+        else:
+            render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, opt.mult)
+            accum_bg_counts = None
+
+
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
-            # image *= alpha_mask
-            gt_image=gt_image*alpha_mask+(1-alpha_mask)*bg.view(3, 1, 1)
-            
-
-        
+            image *= alpha_mask
+            # gt_image=gt_image*alpha_mask+(1-alpha_mask)*bg.view(3, 1, 1)
+                    
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
@@ -178,6 +191,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
+        # Background Opacity Decay Loss
+        if opt.lambda_opacity_bg > 0:
+            # Penalize opacity of Gaussians that cover background pixels
+            # accum_bg_counts is [N], get_opacity is [N, 1]
+            bg_opacity_loss = opt.lambda_opacity_bg * (gaussians.get_opacity_at_time(viewpoint_cam.time_idx) * accum_bg_counts.unsqueeze(1)).sum() / (gt_image.shape[1] * gt_image.shape[2])
+            loss += bg_opacity_loss
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -257,9 +276,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
                 
-                if iteration > opt.densify_from_iter and iteration % opt.black_point_prune_interval == 0:
-                    gaussians.prune_black_points(opt.black_point_threshold)
+                #删除黑点
+                # if iteration > opt.densify_from_iter and iteration % opt.black_point_prune_interval == 0:
+                #     gaussians.prune_black_points(opt.black_point_threshold)
             
+            #后处理剪枝
             # if iteration % opt.opacity_reset_interval == 0 and iteration > opt.densify_until_iter and iteration < opt.iterations:
             #     camlist = current_batch_cameras.copy()
                     
@@ -272,11 +293,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration % 200 == 0:
                 # Log Active Duration (histogram)
                 active_duration_tensor = gaussians.get_lifetime()
-                opacity_tensor = gaussians.get_opacity # Get current base opacity or combined if valid
-                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
-                # web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], lifetime_tensor=active_duration_tensor, densification_stats=densification_stats, opacity_tensor=opacity_tensor)
+                # Calculate PSNR for logging
+                psnr_val = psnr(image, gt_image).mean().item()
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], psnr=psnr_val, lifetime_tensor=active_duration_tensor, densification_stats=densification_stats)
             else:
-                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], densification_stats=densification_stats)
+                psnr_val = psnr(image, gt_image).mean().item()
+                web_logger_server.log_metrics(iteration, loss.item(), gaussians.get_xyz.shape[0], psnr=psnr_val, densification_stats=densification_stats)
 
 
             # Optimizer step
@@ -295,6 +317,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
     torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+    # scene.save(opt.iterations)
     print("\nTraining Step 1 complete. Starting Parametric Opacity Fitting...")
     gaussians.fit_opacity_params()
     print("\nSaving Step 2 initialized model...")
