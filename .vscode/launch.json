@@ -12,12 +12,13 @@
             "console": "integratedTerminal",
             "args": [
                 "-r",
-                "1000",
+                "500",
                 "-s",
                 "/home/gs/gs/data/TaoRed/frame30",
                 "-m",
-                "/home/gs/gs/data/TaoRed/output_0107_r1000_01",
-                // "--random_background"
+                "/home/gs/gs/data/TaoRed/output_0107_r500_03",
+                "--iterations",
+                "50000"
             ]
         }
     ]

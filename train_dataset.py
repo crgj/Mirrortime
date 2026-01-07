@@ -122,8 +122,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - first_iter) % opt.batch_iterations == 0:
              # Release old
             if current_batch_cameras:
-                 for cam in current_batch_cameras:
-                     cam.release()
+                for cam in current_batch_cameras:
+                    cam.release()
+                batch_viewpoint_stack.clear()
             
             # Fetch new
             try:
@@ -277,8 +278,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.reset_opacity()
                 
                 #删除黑点
-                # if iteration > opt.densify_from_iter and iteration % opt.black_point_prune_interval == 0:
-                #     gaussians.prune_black_points(opt.black_point_threshold)
+                if iteration > opt.densify_from_iter and iteration % opt.black_point_prune_interval == 0:
+                    gaussians.prune_black_points(opt.black_point_threshold)
             
             #后处理剪枝
             # if iteration % opt.opacity_reset_interval == 0 and iteration > opt.densify_until_iter and iteration < opt.iterations:
@@ -318,10 +319,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
     # scene.save(opt.iterations)
-    print("\nTraining Step 1 complete. Starting Parametric Opacity Fitting...")
-    gaussians.fit_opacity_params()
-    print("\nSaving Step 2 initialized model...")
-    scene.save(opt.iterations)
+    # print("\nTraining Step 1 complete. Starting Parametric Opacity Fitting...")
+    # gaussians.fit_opacity_params()
+    # print("\nSaving Step 2 initialized model...")
+    # scene.save(opt.iterations)
     
 
 def prepare_output_and_logger(args):    

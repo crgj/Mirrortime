@@ -59,6 +59,7 @@ class GaussianModel:
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
         self.lifetime_bank = torch.empty(0)
+        self._xyz_bank = torch.empty(0) # [N, T, 3]
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.xyz_gradient_accum_abs = torch.empty(0)
@@ -83,6 +84,7 @@ class GaussianModel:
             self._rotation,
             self._opacity,
             self.lifetime_bank,
+            self._xyz_bank,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.xyz_gradient_accum_abs,
@@ -105,6 +107,7 @@ class GaussianModel:
         self._rotation, 
         self._opacity,
         self.lifetime_bank,
+        self._xyz_bank,
         self.max_radii2D, 
         xyz_gradient_accum, 
         xyz_gradient_accum_abs,
@@ -140,6 +143,9 @@ class GaussianModel:
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
     
+    def get_xyz_at_time(self, time_idx):
+        return self._xyz_bank[:, time_idx, :]
+
     @property
     def get_features_dc(self):
         return self._features_dc
@@ -223,6 +229,9 @@ class GaussianModel:
         # Lifetime initialized to (N, T) with initial effective value ~0.99
         # inverse_sigmoid(0.99) approx 4.595
         lifetime_init = 4.6 * torch.ones((fused_point_cloud.shape[0], Frame_count), dtype=torch.float, device="cuda")
+        
+        # xyz_bank initialized to (N, T, 3), repeating the initial xyz
+        xyz_bank_init = fused_point_cloud.unsqueeze(1).repeat(1, Frame_count, 1) # [N, T, 3]
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
@@ -231,6 +240,7 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.lifetime_bank = nn.Parameter(lifetime_init.requires_grad_(True))
+        self._xyz_bank = nn.Parameter(xyz_bank_init.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
@@ -249,6 +259,7 @@ class GaussianModel:
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self.lifetime_bank], 'lr': training_args.opacity_lr, "name": "lifetime_bank"},
+            {'params': [self._xyz_bank], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz_bank"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
@@ -286,11 +297,15 @@ class GaussianModel:
             for param_group in self.exposure_optimizer.param_groups:
                 param_group['lr'] = self.exposure_scheduler_args(iteration)
 
+        lr = None
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
                 param_group['lr'] = lr
-                return lr
+            if param_group["name"] == "xyz_bank":
+                lr_bank = self.xyz_scheduler_args(iteration)
+                param_group['lr'] = lr_bank
+        return lr
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
@@ -387,7 +402,7 @@ class GaussianModel:
     def save_ply(self, path, time_idx=0):
         mkdir_p(os.path.dirname(path))
 
-        xyz = self._xyz.detach().cpu().numpy()
+        xyz = self.get_xyz_at_time(time_idx).detach().cpu().numpy()
         normals = np.zeros_like(xyz)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
@@ -443,6 +458,50 @@ class GaussianModel:
             lifetime_bank = 4.6 * np.ones((xyz.shape[0], frame_count))
             print("Warning: No lifetime bank found in PLY. Initializing with default 4.6 (effective 0.99).")
 
+        # Load xyz_bank
+        # Expect attributes like xyz_bank_0_x etc or similar.
+        # Actually in save_ply_4d we used flattened order.
+        # Let's find properties starting with "xyz_bank_"
+        xyz_bank_props = [p.name for p in plydata.elements[0].properties if p.name.startswith("xyz_bank_")]
+        # Sort by frame index and coord?
+        # Naming was f'xyz_bank_{t}_{coord}'
+        # To be safe on loading, we should parse t and coord
+        # But simple sorting might work if we are consistent.
+        # Let's use a robust way if possible, or just strict expectation if we only load what we save.
+        
+        # If we just look for xyz_bank_*, we need to reconstruct (N, T, 3)
+        if len(xyz_bank_props) > 0:
+            # Assume they are stored in order t=0, x,y,z; t=1, x,y,z ...
+            # Sort by t then coord?
+            # xyz_bank_0_x, xyz_bank_0_y, xyz_bank_0_z, xyz_bank_1_x ...
+            # key: t * 3 + (0 if x, 1 if y, 2 if z)
+            def get_xyz_bank_order(name):
+                # name format: xyz_bank_{t}_{coord}
+                parts = name.split('_')
+                if len(parts) >= 4: # xyz, bank, t, coord
+                    t = int(parts[2])
+                    coord = parts[3]
+                    offset = 0 if coord == 'x' else (1 if coord == 'y' else 2)
+                    return t * 3 + offset
+                return 0 # Should not happen if format is correct
+            
+            xyz_bank_props = sorted(xyz_bank_props, key=get_xyz_bank_order)
+            xyz_bank_flat = np.zeros((xyz.shape[0], len(xyz_bank_props)))
+            for idx, attr_name in enumerate(xyz_bank_props):
+                xyz_bank_flat[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            
+            # Reshape to (N, T, 3)
+            num_frames = len(xyz_bank_props) // 3
+            xyz_bank = xyz_bank_flat.reshape(xyz.shape[0], num_frames, 3)
+        else:
+             # Fallback
+            # Initializing with repeating xyz
+            frame_count = 2 # Default fallback
+            if hasattr(self, 'total_frames') and self.total_frames > 0:
+                frame_count = self.total_frames
+            xyz_bank = np.repeat(xyz[:, np.newaxis, :], frame_count, axis=1)
+            print("Warning: No xyz bank found in PLY. Initializing with repeating xyz.")
+
         features_dc = np.zeros((xyz.shape[0], 3, 1))
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
@@ -474,6 +533,7 @@ class GaussianModel:
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self.lifetime_bank = nn.Parameter(torch.tensor(lifetime_bank, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._xyz_bank = nn.Parameter(torch.tensor(xyz_bank, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
@@ -530,6 +590,7 @@ class GaussianModel:
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self.lifetime_bank = optimizable_tensors["lifetime_bank"]
+        self._xyz_bank = optimizable_tensors["xyz_bank"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -563,12 +624,13 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_lifetime_bank, new_scaling, new_rotation, new_tmp_radii):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_lifetime_bank, new_xyz_bank, new_scaling, new_rotation, new_tmp_radii):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
         "opacity": new_opacities,
         "lifetime_bank": new_lifetime_bank,
+        "xyz_bank": new_xyz_bank,
         "scaling" : new_scaling,
         "rotation" : new_rotation}
 
@@ -578,6 +640,7 @@ class GaussianModel:
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self.lifetime_bank = optimizable_tensors["lifetime_bank"]
+        self._xyz_bank = optimizable_tensors["xyz_bank"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -610,9 +673,15 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_lifetime_bank = self.lifetime_bank[selected_pts_mask].repeat(N,1)
+        
+        # Perturb xyz_bank for splits
+        perturbation = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) # (M, 3)
+        new_xyz_bank = self._xyz_bank[selected_pts_mask].repeat(N, 1, 1) # (M, T, 3)
+        new_xyz_bank = new_xyz_bank + perturbation.unsqueeze(1)
+
         new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_lifetime_bank, new_scaling, new_rotation, new_tmp_radii)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_lifetime_bank, new_xyz_bank, new_scaling, new_rotation, new_tmp_radii)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
@@ -634,12 +703,13 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
         new_lifetime_bank = self.lifetime_bank[selected_pts_mask]
+        new_xyz_bank = self._xyz_bank[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
         new_tmp_radii = self.tmp_radii[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_lifetime_bank, new_scaling, new_rotation, new_tmp_radii)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_lifetime_bank, new_xyz_bank, new_scaling, new_rotation, new_tmp_radii)
         
         return n_cloned
 
@@ -687,8 +757,13 @@ class GaussianModel:
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_lifetime_bank = self.lifetime_bank[selected_pts_mask].repeat(N,1)
         new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
+        
+        # Perturb xyz_bank for fastgs splits
+        perturbation = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) # (M, 3)
+        new_xyz_bank = self._xyz_bank[selected_pts_mask].repeat(N, 1, 1) # (M, T, 3)
+        new_xyz_bank = new_xyz_bank + perturbation.unsqueeze(1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_lifetime_bank, new_scaling, new_rotation, new_tmp_radii)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_lifetime_bank, new_xyz_bank, new_scaling, new_rotation, new_tmp_radii)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -701,11 +776,12 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
         new_lifetime_bank = self.lifetime_bank[selected_pts_mask]
+        new_xyz_bank = self._xyz_bank[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
         new_tmp_radii = self.tmp_radii[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_lifetime_bank, new_scaling, new_rotation, new_tmp_radii)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_lifetime_bank, new_xyz_bank, new_scaling, new_rotation, new_tmp_radii)
 
     def densify_and_prune_fastgs(self, max_screen_size, min_opacity, extent, radii, args, importance_score = None, pruning_score = None):
         

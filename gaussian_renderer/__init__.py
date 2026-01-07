@@ -51,7 +51,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    means3D = pc.get_xyz_at_time(viewpoint_camera.time_idx)
     means2D = screenspace_points 
     #WDD [2024-07-30] [修改不再使用单一时间索引的opacity，而是使用完整的opacity张量]
     # opacity = pc.get_opacity [:, viewpoint_camera.time_idx:viewpoint_camera.time_idx+1]  
@@ -175,7 +175,7 @@ def render_fastgs(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.T
 
     rasterizer = GaussianRasterizerFastGS(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    means3D = pc.get_xyz_at_time(viewpoint_camera.time_idx)
     means2D = screenspace_points
     # opacity = pc.get_opacity
     #SUMO
